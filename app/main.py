@@ -1,122 +1,108 @@
-# ================================================================
-# 🌐 TAAA Semantic + Cluster Visualizer (Top-20 Edges + AAC + Edge Tooltips)
-# ================================================================
-from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from openai import OpenAI
-import pandas as pd, networkx as nx, tempfile, os, re, itertools
+# ============================================================
+# 🧭 TAAA Semantic Extractor — AAC Network Analyzer (FastAPI)
+# ============================================================
 
-app = FastAPI(
-    title="TAAA Semantic + Cluster Visualizer (AAC)",
-    description="Upload abstracts, extract multilingual keywords, build top-20 co-word clusters, compute AAC metric, and show interactive tooltips.",
-    version="3.6.0"
-)
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+import pandas as pd
+import networkx as nx
+import matplotlib.pyplot as plt
+import io, base64, os
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+app = FastAPI()
 
-# -------------------- Home --------------------
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return HTMLResponse("""
-    <h2>TAAA Semantic + Cluster Visualizer (AAC Metric)</h2>
-    <form action="/visualize" method="post" enctype="multipart/form-data">
-        <input type="file" name="file">
-        <button type="submit">Analyze & Visualize</button>
-    </form>
-    """)
+# ------------------------------------------------------------
+# Serve static assets (index.html, style.css, sample CSVs)
+# ------------------------------------------------------------
+app.mount("/", StaticFiles(directory="app", html=True), name="static")
 
-# -------------------- Visualization --------------------
-@app.post("/visualize")
-async def visualize(file: UploadFile = File(...)):
-    df = pd.read_csv(file.file)
-    if "abstract" not in df.columns:
-        return JSONResponse(status_code=400, content={"error": "Missing 'abstract' column."})
+# ------------------------------------------------------------
+# Compute AAC and draw simple weighted network
+# ------------------------------------------------------------
+def compute_aac(df):
+    df = df.copy()
+    df["edge"] = df["edge"].astype(float)
+    total_edge = df["edge"].sum()
 
-    df["keywords"] = df["abstract"].apply(lambda x: extract_keywords(str(x)))
-    edges, nodes = build_cooccurrence(df)
+    # Normalize edge weights
+    df["weight"] = df["edge"] / total_edge
 
-    # keep top-20 edges
-    edges = edges.sort_values("Weight", ascending=False).head(20)
-    sel = set(edges["Source"]) | set(edges["Target"])
-    nodes = nodes[nodes["keyword"].isin(sel)]
+    # Compute node AAC (sum of normalized edge weights per node)
+    strength = (
+        pd.concat([
+            df.groupby("Source")["weight"].sum(),
+            df.groupby("Target")["weight"].sum()
+        ])
+        .groupby(level=0)
+        .sum()
+        .reset_index()
+    )
+    strength.columns = ["node", "AAC"]
+    return df, strength
 
-    # clusters
-    G = nx.from_pandas_edgelist(edges, "Source", "Target", "Weight")
-    clusters = {n: i for i, comp in enumerate(nx.connected_components(G), 1) for n in comp}
-    nodes["cluster"] = nodes["keyword"].map(clusters).fillna(0).astype(int)
 
-    # AAC
-    top3 = nodes["frequency"].nlargest(3).tolist() + [1, 1, 1]
-    r1, r2, r3 = top3[:3]
-    aac = ((r1/r2)/(1+r1/r2))*((r2/r3)/(1+r2/r3))
-    aac = round(aac, 2)
+def draw_network(df):
+    G = nx.from_pandas_edgelist(df, "Source", "Target", edge_attr="edge", create_using=nx.Graph())
+    pos = nx.spring_layout(G, seed=42)
 
-    # save CSVs
-    kw_file = tempfile.NamedTemporaryFile(delete=False, suffix="_keywords.csv")
-    cl_file = tempfile.NamedTemporaryFile(delete=False, suffix="_clusters.csv")
-    df.to_csv(kw_file.name, index=False, encoding="utf-8-sig")
-    nodes.to_csv(cl_file.name, index=False, encoding="utf-8-sig")
+    plt.figure(figsize=(6, 5))
+    nx.draw_networkx_edges(G, pos, alpha=0.4)
+    nx.draw_networkx_nodes(G, pos, node_color="#7FB3D5", node_size=300)
+    nx.draw_networkx_labels(G, pos, font_size=8)
+    plt.axis("off")
 
-    # positions
-    pos = nx.spring_layout(G, k=0.4, seed=42)
-    data_edges = []
-    for _, w in edges.iterrows():
-        s, t = w["Source"], w["Target"]
-        wgt = float(w["Weight"])
-        c1, c2 = int(nodes.loc[nodes["keyword"]==s,"cluster"].values[0]), int(nodes.loc[nodes["keyword"]==t,"cluster"].values[0])
-        data_edges.append({"source": s, "target": t, "weight": wgt, "tooltip": f"{s} ↔ {t} (Weight = {wgt}, Clusters {c1}–{c2})"})
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight")
+    plt.close()
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode("utf-8")
 
-    data_nodes = [
-        {"id": n, "x": float(pos[n][0]), "y": float(pos[n][1]),
-         "cluster": int(clusters.get(n,0)),
-         "freq": int(nodes.loc[nodes["keyword"]==n,"frequency"].values[0])}
-        for n in G.nodes()
-    ]
 
-    result = {
-        "aac": aac,
-        "meanX": float(nodes["frequency"].mean()),
-        "meanY": float(edges["Weight"].mean()),
-        "nodes": data_nodes,
-        "edges": data_edges,
-        "download": {"keywords": kw_file.name, "clusters": cl_file.name}
-    }
-    return JSONResponse(content=result)
-
-# -------------------- GPT keyword extraction --------------------
-def extract_keywords(txt):
-    if not txt or pd.isna(txt): return ""
-    prompt = (
-      "請根據以下摘要內容，萃取 10 個具語義代表性的學術關鍵詞或片語，"
-      "可為繁體中文或英文（依原文語言自動判斷）。"
-      "使用逗號（,）分隔結果：\n\n"+txt)
+# ------------------------------------------------------------
+# POST endpoint: analyze uploaded CSV
+# ------------------------------------------------------------
+@app.post("/analyze_csv", response_class=HTMLResponse)
+async def analyze_csv(file: UploadFile = File(...)):
     try:
-        res = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role":"user","content":prompt}],
-            temperature=0.2)
-        return normalize_commas(res.choices[0].message.content.strip())
+        data = pd.read_csv(file.file)
     except Exception as e:
-        return f"Error: {e}"
+        return HTMLResponse(f"<h3>❌ 無法讀取檔案: {e}</h3>")
 
-def normalize_commas(t):
-    return re.sub(r"[、;；\|／/，\s]+", ", ", t).strip(" ,")
+    data.columns = [c.strip() for c in data.columns]
+    required = {"Source", "Target", "edge"}
+    if not required.issubset(data.columns):
+        return HTMLResponse(f"<h3>❌ CSV 必須包含欄位: {', '.join(required)}</h3>")
 
-# -------------------- Co-occurrence builder --------------------
-def build_cooccurrence(df):
-    edges,nodes=[],[]
-    for _,r in df.iterrows():
-        kws=[k.strip() for k in str(r["keywords"]).split(",") if k.strip()]
-        nodes+=kws
-        for a,b in itertools.combinations(sorted(set(kws)),2):
-            edges.append((a,b))
-    e=pd.DataFrame(edges,columns=["Source","Target"])
-    e["Weight"]=1
-    e=e.groupby(["Source","Target"],as_index=False)["Weight"].sum()
-    n=pd.DataFrame(pd.Series(nodes).value_counts()).reset_index()
-    n.columns=["keyword","frequency"]
-    return e,n
+    df_edges, df_nodes = compute_aac(data)
+    img_base64 = draw_network(df_edges)
 
-if __name__=="__main__":
-    import uvicorn
-    uvicorn.run(app,host="0.0.0.0",port=int(os.environ.get("PORT",10000)))
+    # Prepare downloadable CSV
+    out_buf = io.StringIO()
+    df_nodes.to_csv(out_buf, index=False)
+    csv_bytes = io.BytesIO(out_buf.getvalue().encode("utf-8"))
+    app.state.csv_bytes = csv_bytes
+
+    html = f"""
+    <h2>✅ 分析完成 / Analysis Complete</h2>
+    <p>Sum of edges = {df_edges['edge'].sum():.2f}</p>
+    <img src="data:image/png;base64,{img_base64}" alt="AAC Network Graph" style="max-width:90%;border:1px solid #ccc"/><br><br>
+    <a href="/download_csv" target="_blank">📥 下載結果 (CSV)</a>
+    """
+    return HTMLResponse(html)
+
+
+# ------------------------------------------------------------
+# GET endpoint: download CSV
+# ------------------------------------------------------------
+@app.get("/download_csv")
+async def download_csv():
+    csv_bytes = getattr(app.state, "csv_bytes", None)
+    if not csv_bytes:
+        return HTMLResponse("<h3>❌ No CSV available. Run analysis first.</h3>")
+    csv_bytes.seek(0)
+    return StreamingResponse(
+        csv_bytes,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=results.csv"}
+    )
