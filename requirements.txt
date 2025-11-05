@@ -1,9 +1,9 @@
-fastapi==0.115.0
-uvicorn==0.31.1
-python-multipart==0.0.20
-pandas==2.2.3
-networkx==3.4.2
-matplotlib==3.9.2
-langdetect==1.0.9
-openai==1.35.13      # ✅ Render-safe version
-requests==2.32.3
+fastapi
+uvicorn
+pandas
+networkx
+matplotlib
+chardet
+langdetect
+openai>=1.0.0
+requests
