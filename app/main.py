@@ -1,10 +1,10 @@
 # ================================================================
-# 🌐 TAAA Semantic–Co-Word Analyzer (Stable Render Version)
+# 🌐 TAAA Semantic–Co-Word Analyzer (Robust Encoding + Column Filter)
 # Author: Smile
 # Description:
 #   • Mode 1  → Abstract / DOI column (GPT/DOI extraction)
 #   • Mode 2  → Multi-column co-word terms
-#   • Louvain clustering (categorical edges only)
+#   • Robust encoding auto-detection + text-only column filtering
 # ================================================================
 
 from fastapi import FastAPI, UploadFile, File
@@ -12,22 +12,17 @@ from fastapi.responses import HTMLResponse, FileResponse
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
-import tempfile, io, base64, os, re, requests
+import tempfile, io, base64, os, re, requests, chardet
 from langdetect import detect
 from openai import OpenAI
 
-# ------------------------------------------------------------
-# 🚀 FastAPI setup
-# ------------------------------------------------------------
 app = FastAPI(
     title="TAAA Semantic–Co-Word Analyzer",
-    description="Multilingual categorical Louvain clustering (Mode 1 / Mode 2)",
-    version="2.6.0"
+    description="Multilingual Louvain clustering with encoding auto-detect & text-only filtering",
+    version="2.8.0"
 )
 
-# ------------------------------------------------------------
-# 🔑 GPT client
-# ------------------------------------------------------------
+# ------------------------- GPT setup ----------------------------
 def get_client():
     key = os.getenv("OPENAI_API_KEY")
     if not key:
@@ -36,113 +31,30 @@ def get_client():
         os.environ.pop(var, None)
     return OpenAI(api_key=key)
 
-# ------------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-def home():
-    html = open("index.html", "r", encoding="utf-8").read()
-    return HTMLResponse(content=html)
+# ------------------------- Helpers ------------------------------
+def safe_read_csv(uploaded):
+    """Safely read CSV with multiple encoding fallbacks."""
+    content = uploaded.read()
+    uploaded.file.seek(0)  # reset for potential reuse
+    enc_guess = chardet.detect(content).get("encoding", "utf-8")
 
-# ------------------------------------------------------------
-@app.post("/analyze_csv")
-async def analyze_csv(file: UploadFile = File(...)):
-    fn = file.filename
-    try:
-        # auto-detect delimiter
-        df = pd.read_csv(file.file, sep=None, engine="python")
-    except Exception as e:
-        return HTMLResponse(f"<h3>❌ CSV read error: {e}</h3>")
+    for enc in [enc_guess, "utf-8", "utf-8-sig", "big5", "cp950", "latin1"]:
+        try:
+            uploaded.file.seek(0)
+            df = pd.read_csv(uploaded.file, sep=None, engine="python", encoding=enc)
+            return df
+        except Exception:
+            uploaded.file.seek(0)
+            continue
+    raise UnicodeDecodeError("All encodings failed")
 
-    df = df.dropna(how="all")
-    if df.empty:
-        return HTMLResponse("<h3>❌ No usable data rows found in your file.</h3>")
-
-    mode = "mode1" if df.shape[1] == 1 else "mode2"
-
-    # --------------------------------------------------------
-    # 🧠 Mode 1 – Abstracts / DOI
-    # --------------------------------------------------------
-    if mode == "mode1":
-        all_terms = []
-        for _, r in df.iterrows():
-            text = str(r.iloc[0]).strip()
-            if not text:
-                continue
-            if re.match(r"^10\.\d{4,9}/", text):
-                text = fetch_abstract_from_doi(text)
-            lang = detect_language(text)
-            terms = extract_terms_gpt(fn, text, lang)
-            all_terms.append(split_terms(terms))
-        df_terms = pd.DataFrame(all_terms)
-        edges = build_edges(df_terms)
-
-    # --------------------------------------------------------
-    # 🧩 Mode 2 – Co-word terms
-    # --------------------------------------------------------
-    else:
-        lang = detect_language(" ".join(df.columns))
-        edges = build_edges(df)
-
-    # --------------------------------------------------------
-    if edges.empty:
-        preview_html = df.head().to_html(index=False)
-        return HTMLResponse(
-            f"<h3>❌ No valid term pairs found.</h3>"
-            f"<p>👉 Each row must contain at least two non-empty terms.</p>"
-            f"<h4>File preview:</h4>{preview_html}"
-        )
-
-    vertices, rels = louvain_cluster(edges)
-    if vertices.empty:
-        return HTMLResponse("<h3>❌ No cluster detected.</h3>")
-
-    img64 = plot_network(vertices, rels)
-
-    tmp_v = tempfile.NamedTemporaryFile(delete=False, suffix="_vertices.csv")
-    tmp_r = tempfile.NamedTemporaryFile(delete=False, suffix="_relations.csv")
-    vertices.to_csv(tmp_v.name, index=False, encoding="utf-8-sig")
-    rels.to_csv(tmp_r.name, index=False, encoding="utf-8-sig")
-
-    html = f"""
-    <h2>✅ Analysis Complete ({mode})</h2>
-    <p>Detected language: <b>{lang}</b></p>
-    <img src="data:image/png;base64,{img64}" style="max-width:95%;border:1px solid #ccc"/><br><br>
-    <a href="/download?path={tmp_v.name}">📥 Vertices CSV</a><br>
-    <a href="/download?path={tmp_r.name}">📥 Relations CSV</a>
-    """
-    return HTMLResponse(content=html)
-
-# ------------------------------------------------------------
-@app.get("/download")
-async def download(path: str):
-    return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
-
-# ------------------------------------------------------------
-# 🧠 GPT keyword extraction
-# ------------------------------------------------------------
-def extract_terms_gpt(filename: str, text: str, lang: str):
-    # for non-developer users (no "smilechien" in file name)
-    if "smilechien" not in filename.lower():
-        words = re.findall(r"[A-Za-z\u4e00-\u9fff\-]+", text)
-        return ", ".join(sorted(set(words))[:10])
-    if not text.strip():
-        return ""
-    prompt = f"Extract 10 key semantic terms in {lang}, comma-separated:\n{text}"
-    try:
-        c = get_client()
-        r = c.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-        )
-        return r.choices[0].message.content.strip()
-    except Exception as e:
-        return f"Error: {e}"
-
-# ------------------------------------------------------------
-# 🈚 helpers
-# ------------------------------------------------------------
-def split_terms(t):
-    return [x.strip() for x in re.split(r"[;,、，]", str(t)) if x.strip()]
+def is_text_column(series: pd.Series) -> bool:
+    """Return True if column likely contains text, not numbers/dates."""
+    sample = series.dropna().astype(str).head(10)
+    if sample.empty:
+        return False
+    numeric_ratio = sum(s.replace('.', '', 1).isdigit() for s in sample) / len(sample)
+    return numeric_ratio < 0.5  # mostly non-numeric → keep
 
 def detect_language(text):
     try:
@@ -155,7 +67,10 @@ def detect_language(text):
     }
     return mapping.get(code[:2], code)
 
-def fetch_abstract_from_doi(doi: str):
+def split_terms(t):
+    return [x.strip() for x in re.split(r"[;,、，\t]", str(t)) if x.strip()]
+
+def fetch_abstract_from_doi(doi):
     for u in [
         f"https://api.crossref.org/works/{doi}",
         f"https://api.openalex.org/works/doi:{doi}"
@@ -174,15 +89,31 @@ def fetch_abstract_from_doi(doi: str):
             pass
     return ""
 
-# ------------------------------------------------------------
-# 🧩 Edge builder (robust)
-# ------------------------------------------------------------
+# ------------------------- GPT term extractor -------------------
+def extract_terms_gpt(filename, text, lang):
+    if "smilechien" not in filename.lower():
+        words = re.findall(r"[A-Za-z\u4e00-\u9fff\-]+", text)
+        return ", ".join(sorted(set(words))[:10])
+    if not text.strip():
+        return ""
+    prompt = f"Extract 10 key semantic terms in {lang}, comma-separated:\n{text}"
+    try:
+        c = get_client()
+        r = c.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+        return r.choices[0].message.content.strip()
+    except Exception as e:
+        return f"Error: {e}"
+
+# ------------------------- Edge builder --------------------------
 def build_edges(df):
     if df.empty:
         return pd.DataFrame(columns=["Source", "Target", "edge"])
     pairs = []
     for _, row in df.iterrows():
-        # convert all to strings and remove empties/dupes
         terms = [str(t).strip() for t in row if str(t).strip() not in ["", "nan", "None"]]
         terms = list(dict.fromkeys(terms))
         if len(terms) < 2:
@@ -196,9 +127,7 @@ def build_edges(df):
     e = e.groupby(["Source", "Target"], as_index=False)["edge"].sum()
     return e
 
-# ------------------------------------------------------------
-# 🧮 Louvain clustering (categorical)
-# ------------------------------------------------------------
+# ------------------------- Louvain cluster -----------------------
 def louvain_cluster(edges):
     G = nx.from_pandas_edgelist(edges, "Source", "Target", "edge")
     comms = nx.community.louvain_communities(G, seed=42)
@@ -210,14 +139,11 @@ def louvain_cluster(edges):
     rels = edges.query("Source in @top20.term and Target in @top20.term")
     return top20, rels
 
-# ------------------------------------------------------------
-# 🖼️ Plot network
-# ------------------------------------------------------------
+# ------------------------- Plot ---------------------------------
 def plot_network(vertices, rels):
     plt.figure(figsize=(7, 6))
     G = nx.from_pandas_edgelist(rels, "Source", "Target", "edge")
     pos = nx.spring_layout(G, seed=42)
-
     nx.draw_networkx_edges(G, pos, alpha=0.3)
     nx.draw_networkx_nodes(
         G, pos,
@@ -228,14 +154,89 @@ def plot_network(vertices, rels):
     nx.draw_networkx_labels(G, pos, font_size=8)
     plt.title("Top-20 Louvain Network (Categorical Relations)", fontsize=12)
     plt.axis("off")
-
     buf = io.BytesIO()
     plt.savefig(buf, format="png", bbox_inches="tight")
     plt.close()
     buf.seek(0)
     return base64.b64encode(buf.read()).decode()
 
-# ------------------------------------------------------------
+# ------------------------- Web Routes ----------------------------
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HTMLResponse(open("index.html", "r", encoding="utf-8").read())
+
+@app.post("/analyze_csv")
+async def analyze_csv(file: UploadFile = File(...)):
+    fn = file.filename
+    try:
+        df = safe_read_csv(file)
+    except Exception as e:
+        return HTMLResponse(f"<h3>❌ CSV read error: {e}</h3>")
+
+    df = df.dropna(how="all")
+    if df.empty:
+        return HTMLResponse("<h3>❌ Your file has no usable rows.</h3>")
+
+    # keep only columns with mostly text
+    text_cols = [c for c in df.columns if is_text_column(df[c])]
+    df = df[text_cols]
+    if df.empty:
+        return HTMLResponse("<h3>❌ No text-like columns detected (numeric-only file).</h3>")
+
+    mode = "mode1" if df.shape[1] == 1 else "mode2"
+
+    # ---------- Mode 1 ----------
+    if mode == "mode1":
+        all_terms = []
+        for _, r in df.iterrows():
+            text = str(r.iloc[0]).strip()
+            if not text:
+                continue
+            if re.match(r"^10\.\d{4,9}/", text):
+                text = fetch_abstract_from_doi(text)
+            lang = detect_language(text)
+            terms = extract_terms_gpt(fn, text, lang)
+            all_terms.append(split_terms(terms))
+        df_terms = pd.DataFrame(all_terms)
+        edges = build_edges(df_terms)
+    # ---------- Mode 2 ----------
+    else:
+        lang = detect_language(" ".join(df.columns))
+        edges = build_edges(df)
+
+    if edges.empty:
+        preview_html = df.head().to_html(index=False)
+        return HTMLResponse(
+            f"<h3>❌ No valid term pairs found.</h3>"
+            f"<p>👉 Ensure each row has ≥2 non-empty text terms.</p>"
+            f"<h4>File preview:</h4>{preview_html}"
+        )
+
+    vertices, rels = louvain_cluster(edges)
+    if vertices.empty:
+        return HTMLResponse("<h3>❌ No cluster detected.</h3>")
+
+    img64 = plot_network(vertices, rels)
+    tmp_v = tempfile.NamedTemporaryFile(delete=False, suffix="_vertices.csv")
+    tmp_r = tempfile.NamedTemporaryFile(delete=False, suffix="_relations.csv")
+    vertices.to_csv(tmp_v.name, index=False, encoding="utf-8-sig")
+    rels.to_csv(tmp_r.name, index=False, encoding="utf-8-sig")
+
+    html = f"""
+    <h2>✅ Analysis Complete ({mode})</h2>
+    <p>Detected language: <b>{lang}</b></p>
+    <p>Kept text columns: <b>{', '.join(text_cols)}</b></p>
+    <img src="data:image/png;base64,{img64}" style="max-width:95%;border:1px solid #ccc"/><br><br>
+    <a href="/download?path={tmp_v.name}">📥 Vertices CSV</a><br>
+    <a href="/download?path={tmp_r.name}">📥 Relations CSV</a>
+    """
+    return HTMLResponse(content=html)
+
+@app.get("/download")
+async def download(path: str):
+    return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
+
+# ------------------------- Run locally ---------------------------
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 10000))
