@@ -1,101 +1,122 @@
-from fastapi import FastAPI, UploadFile, File, Form
-from fastapi.responses import FileResponse, HTMLResponse
-import pandas as pd
-import openai
-import tempfile
-import os
-import re
+# ================================================================
+# 🌐 TAAA Semantic + Cluster Visualizer (Top-20 Edges + AAC + Edge Tooltips)
+# ================================================================
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from openai import OpenAI
+import pandas as pd, networkx as nx, tempfile, os, re, itertools
 
 app = FastAPI(
-    title="TAAA Semantic Extractor",
-    description="Adaptive multilingual semantic keyword extractor using GPT-4o-mini",
-    version="4.0.0"
+    title="TAAA Semantic + Cluster Visualizer (AAC)",
+    description="Upload abstracts, extract multilingual keywords, build top-20 co-word clusters, compute AAC metric, and show interactive tooltips.",
+    version="3.6.0"
 )
 
-openai.api_key = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# -------------------- Home --------------------
 @app.get("/", response_class=HTMLResponse)
 def home():
-    html = open("index.html", "r", encoding="utf-8").read()
-    return HTMLResponse(content=html)
+    return HTMLResponse("""
+    <h2>TAAA Semantic + Cluster Visualizer (AAC Metric)</h2>
+    <form action="/visualize" method="post" enctype="multipart/form-data">
+        <input type="file" name="file">
+        <button type="submit">Analyze & Visualize</button>
+    </form>
+    """)
 
-@app.post("/analyze_csv")
-async def analyze_csv(file: UploadFile = File(...), bilingual: str = Form("false")):
+# -------------------- Visualization --------------------
+@app.post("/visualize")
+async def visualize(file: UploadFile = File(...)):
     df = pd.read_csv(file.file)
     if "abstract" not in df.columns:
-        return {"error": "Missing 'abstract' column."}
+        return JSONResponse(status_code=400, content={"error": "Missing 'abstract' column."})
 
-    bilingual_mode = (bilingual.lower() == "true")
+    df["keywords"] = df["abstract"].apply(lambda x: extract_keywords(str(x)))
+    edges, nodes = build_cooccurrence(df)
 
-    results = df["abstract"].apply(lambda x: extract_keywords_global(x, bilingual_mode))
-    df["language"], df["keywords"] = zip(*results)
+    # keep top-20 edges
+    edges = edges.sort_values("Weight", ascending=False).head(20)
+    sel = set(edges["Source"]) | set(edges["Target"])
+    nodes = nodes[nodes["keyword"].isin(sel)]
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-    df.to_csv(tmp.name, index=False, encoding="utf-8-sig")
-    return FileResponse(tmp.name, media_type="text/csv", filename="taaa_keywords_global.csv")
+    # clusters
+    G = nx.from_pandas_edgelist(edges, "Source", "Target", "Weight")
+    clusters = {n: i for i, comp in enumerate(nx.connected_components(G), 1) for n in comp}
+    nodes["cluster"] = nodes["keyword"].map(clusters).fillna(0).astype(int)
 
-# 🌍 Language detection
-def detect_language(text: str) -> str:
-    zh_count = len(re.findall(r'[\u4e00-\u9fff]', text))
-    en_count = len(re.findall(r'[A-Za-z]', text))
-    jp_count = len(re.findall(r'[\u3040-\u30ff]', text))
-    kr_count = len(re.findall(r'[\uac00-\ud7af]', text))
-    accented = len(re.findall(r'[áéíóúüñçàèùßαβγабвг]', text, flags=re.IGNORECASE))
+    # AAC
+    top3 = nodes["frequency"].nlargest(3).tolist() + [1, 1, 1]
+    r1, r2, r3 = top3[:3]
+    aac = ((r1/r2)/(1+r1/r2))*((r2/r3)/(1+r2/r3))
+    aac = round(aac, 2)
 
-    if zh_count > 0 and en_count > 0:
-        return "mixed"
+    # save CSVs
+    kw_file = tempfile.NamedTemporaryFile(delete=False, suffix="_keywords.csv")
+    cl_file = tempfile.NamedTemporaryFile(delete=False, suffix="_clusters.csv")
+    df.to_csv(kw_file.name, index=False, encoding="utf-8-sig")
+    nodes.to_csv(cl_file.name, index=False, encoding="utf-8-sig")
 
-    lang_scores = {
-        "chinese": zh_count,
-        "english": en_count,
-        "japanese": jp_count,
-        "korean": kr_count,
-        "other": accented
+    # positions
+    pos = nx.spring_layout(G, k=0.4, seed=42)
+    data_edges = []
+    for _, w in edges.iterrows():
+        s, t = w["Source"], w["Target"]
+        wgt = float(w["Weight"])
+        c1, c2 = int(nodes.loc[nodes["keyword"]==s,"cluster"].values[0]), int(nodes.loc[nodes["keyword"]==t,"cluster"].values[0])
+        data_edges.append({"source": s, "target": t, "weight": wgt, "tooltip": f"{s} ↔ {t} (Weight = {wgt}, Clusters {c1}–{c2})"})
+
+    data_nodes = [
+        {"id": n, "x": float(pos[n][0]), "y": float(pos[n][1]),
+         "cluster": int(clusters.get(n,0)),
+         "freq": int(nodes.loc[nodes["keyword"]==n,"frequency"].values[0])}
+        for n in G.nodes()
+    ]
+
+    result = {
+        "aac": aac,
+        "meanX": float(nodes["frequency"].mean()),
+        "meanY": float(edges["Weight"].mean()),
+        "nodes": data_nodes,
+        "edges": data_edges,
+        "download": {"keywords": kw_file.name, "clusters": cl_file.name}
     }
-    lang = max(lang_scores, key=lang_scores.get)
-    return lang if lang_scores[lang] > 0 else "unknown"
+    return JSONResponse(content=result)
 
-# 🧠 Optimized multilingual prompt templates
-PROMPTS = {
-    "chinese": "請從以下中文摘要中萃取10個具語義代表性的學術關鍵詞，強調研究主題、方法與核心概念。以頓號（、）分隔。若為技術名詞，請保持原文或以英文標示。\n\n摘要：\n{text}",
-    "english": "Extract 10 semantically representative academic keywords from the following English abstract. Focus on scientific themes, methods, and key terminology. Separate keywords by commas.\n\nAbstract:\n{text}",
-    "japanese": "次の日本語の要約から、研究のテーマ、方法、主要な概念を表す代表的な学術キーワードを10個抽出してください。英語の専門用語が必要な場合は併記してください。キーワードは読点（、）で区切ってください。\n\n要約：\n{text}",
-    "korean": "다음 한국어 초록에서 연구 주제, 방법, 핵심 개념을 대표하는 학술적 주요 키워드 10개를 추출하세요. 필요할 경우 영어 기술 용어를 함께 제시하세요. 키워드는 쉼표(,)로 구분하세요.\n\n초록:\n{text}",
-    "spanish": "Extrae 10 palabras clave académicas representativas del siguiente resumen en español. Enfócate en el tema de investigación, metodología y conceptos principales. Separa las palabras clave con comas. Si existen términos técnicos, puedes mantenerlos en inglés.\n\nResumen:\n{text}",
-    "french": "Extrayez 10 mots-clés académiques représentatifs du résumé suivant en français. Mettez l’accent sur le sujet de recherche, la méthode et les concepts clés. Séparez les mots-clés par des virgules. Les termes techniques peuvent rester en anglais.\n\nRésumé :\n{text}",
-    "mixed": "The following abstract contains both Chinese and English text. Please extract 10 representative academic keywords in English only, summarizing the research focus and technical themes. Separate by commas.\n\nAbstract:\n{text}",
-    "other": "The following abstract is written in {language}. Extract 10 representative academic keywords in the same language if possible. If technical or scientific, provide English equivalents in parentheses. Separate keywords by commas or the natural punctuation of the language.\n\nAbstract:\n{text}",
-    "bilingual": "請根據以下摘要，分別以繁體中文與英文各萃取10個具語義代表性的學術關鍵詞。請輸出格式如下：\n中文關鍵詞：...(以頓號「、」分隔)\nEnglish keywords: ...(以逗號「,」分隔)\n\n摘要內容：\n{text}"
-}
-
-# ✨ Core function
-def extract_keywords_global(text, bilingual_mode=False):
-    if not text or pd.isna(text):
-        return ("unknown", "")
-
-    lang = detect_language(text)
-    prompt = ""
-
-    if bilingual_mode:
-        prompt = PROMPTS["bilingual"].format(text=text)
-    else:
-        if lang in PROMPTS:
-            prompt = PROMPTS[lang].format(text=text)
-        else:
-            prompt = PROMPTS["other"].format(language=lang, text=text)
-
+# -------------------- GPT keyword extraction --------------------
+def extract_keywords(txt):
+    if not txt or pd.isna(txt): return ""
+    prompt = (
+      "請根據以下摘要內容，萃取 10 個具語義代表性的學術關鍵詞或片語，"
+      "可為繁體中文或英文（依原文語言自動判斷）。"
+      "使用逗號（,）分隔結果：\n\n"+txt)
     try:
-        response = openai.ChatCompletion.create(
+        res = client.chat.completions.create(
             model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2
-        )
-        keywords = response["choices"][0]["message"]["content"].strip()
-        return (lang, keywords)
+            messages=[{"role":"user","content":prompt}],
+            temperature=0.2)
+        return normalize_commas(res.choices[0].message.content.strip())
     except Exception as e:
-        return (lang, f"Error: {e}")
+        return f"Error: {e}"
 
-if __name__ == "__main__":
+def normalize_commas(t):
+    return re.sub(r"[、;；\|／/，\s]+", ", ", t).strip(" ,")
+
+# -------------------- Co-occurrence builder --------------------
+def build_cooccurrence(df):
+    edges,nodes=[],[]
+    for _,r in df.iterrows():
+        kws=[k.strip() for k in str(r["keywords"]).split(",") if k.strip()]
+        nodes+=kws
+        for a,b in itertools.combinations(sorted(set(kws)),2):
+            edges.append((a,b))
+    e=pd.DataFrame(edges,columns=["Source","Target"])
+    e["Weight"]=1
+    e=e.groupby(["Source","Target"],as_index=False)["Weight"].sum()
+    n=pd.DataFrame(pd.Series(nodes).value_counts()).reset_index()
+    n.columns=["keyword","frequency"]
+    return e,n
+
+if __name__=="__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 10000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app,host="0.0.0.0",port=int(os.environ.get("PORT",10000)))
