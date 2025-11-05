@@ -1,5 +1,5 @@
 # ============================================================
-# 🌐 TAAA Semantic–Co-Word Analyzer (Louvain + Top-20 Logic)
+# 🌐 TAAA Semantic–Co-Word Analyzer (Louvain + Auto Mode)
 # ============================================================
 
 from fastapi import FastAPI, File, UploadFile, Form
@@ -14,7 +14,7 @@ from langdetect import detect
 from openai import OpenAI
 
 # ============================================================
-# ⚙️ App + Middleware
+# ⚙️ App Configuration
 # ============================================================
 app = FastAPI()
 app.add_middleware(
@@ -27,33 +27,34 @@ app.add_middleware(
 app.mount("/", StaticFiles(directory=".", html=True), name="static")
 
 # ============================================================
-# 🔐 GPT Client Setup
+# 🔐 GPT Key Control
 # ============================================================
 def get_gpt_client(filename: str):
-    """Use server API key only if filename includes 'smilechien'."""
+    """Activate GPT API only for developer files containing 'smilechien'."""
     if "smilechien" in filename.lower():
         key = os.getenv("OPENAI_API_KEY")
         if not key:
-            raise ValueError("OPENAI_API_KEY not set.")
+            raise ValueError("OPENAI_API_KEY not set on Render.")
         return OpenAI(api_key=key)
     return None
 
 # ============================================================
-# 🌏 Language Detection Helper
+# 🌏 Language Detection
 # ============================================================
 def detect_language(text: str):
     try:
         code = detect(text)
     except Exception:
-        code = "unknown"
+        return "Unknown"
     lang_map = {
-        "zh-cn": "Chinese", "zh-tw": "Chinese", "en": "English",
-        "ja": "Japanese", "ko": "Korean", "fr": "French", "es": "Spanish"
+        "zh-cn": "Chinese", "zh-tw": "Chinese",
+        "en": "English", "ja": "Japanese",
+        "ko": "Korean", "fr": "French", "es": "Spanish"
     }
-    return lang_map.get(code, code)
+    return lang_map.get(code.lower(), code)
 
 # ============================================================
-# 🔎 DOI → Abstract via CrossRef / OpenAlex
+# 🔍 DOI → Abstract (CrossRef / OpenAlex)
 # ============================================================
 def fetch_abstract_from_doi(doi: str):
     for url in [
@@ -68,18 +69,18 @@ def fetch_abstract_from_doi(doi: str):
                 if abs_:
                     return re.sub(r"<[^>]+>", "", abs_)
         except Exception:
-            pass
+            continue
     return ""
 
 # ============================================================
 # 🧠 GPT Term Extraction
 # ============================================================
 def extract_terms_gpt(client, text, lang):
-    """Return comma-separated terms (GPT or fallback)."""
+    """Extract 10 semantic terms via GPT or fallback."""
     if not client:
         words = re.findall(r"[\w\-]+", text)
         return ", ".join(sorted(set(words))[:10])
-    prompt = f"Extract 10 key semantic terms (no duplicates) from this {lang} abstract. Output comma-separated terms only.\n\n{text}"
+    prompt = f"Extract 10 key semantic terms (comma-separated, no duplicates) from this {lang} abstract:\n\n{text}"
     try:
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -127,32 +128,13 @@ def cluster_and_top20(edges: pd.DataFrame):
     counts.columns = ["term", "count"]
     counts["cluster"] = counts["term"].map(cluster_map)
 
-    # ---- R-style selection logic ----
-    freq = counts["cluster"].value_counts()
-    selected, remaining = [], 20
-
-    def pick(cond, per_cluster, cap):
-        nonlocal remaining
-        picks = []
-        for cl, f in freq[cond].items():
-            sub = counts[counts["cluster"] == cl].nlargest(per_cluster, "count")
-            picks.append(sub)
-            if sum(len(df) for df in picks) >= cap:
-                break
-        return pd.concat(picks) if picks else pd.DataFrame(columns=counts.columns)
-
-    lvl1 = pick(freq >= 4, 4, 20); selected.append(lvl1)
-    remaining = 20 - len(lvl1)
-    if remaining > 0: selected.append(pick(freq == 3, 3, 22))
-    if remaining > 0: selected.append(pick(freq == 2, 2, 21))
-    if remaining > 0: selected.append(pick(freq == 1, 1, 20))
-
-    top20 = pd.concat(selected).drop_duplicates("term").head(20)
+    # --- Select top-20 nodes ---
+    top20 = counts.sort_values("count", ascending=False).head(20)
     rels = edges.query("Source in @top20.term and Target in @top20.term")
     return top20, rels
 
 # ============================================================
-# 📊 Enhanced Network Plot with μ(edge)/μ(count)
+# 📊 Plot Network
 # ============================================================
 def plot_network(top20: pd.DataFrame, rels: pd.DataFrame):
     if top20.empty or rels.empty:
@@ -166,9 +148,9 @@ def plot_network(top20: pd.DataFrame, rels: pd.DataFrame):
 
     plt.axvline(mean_edge, color="gray", linestyle="--", linewidth=1)
     plt.axhline(mean_count, color="gray", linestyle="--", linewidth=1)
-    plt.text(mean_edge * 1.02, plt.ylim()[1] * 0.9,
+    plt.text(mean_edge * 1.05, plt.ylim()[1] * 0.9,
              f"μ(edge)={mean_edge:.2f}", color="gray", fontsize=8)
-    plt.text(plt.xlim()[1] * 0.8, mean_count * 1.02,
+    plt.text(plt.xlim()[1] * 0.8, mean_count * 1.05,
              f"μ(count)={mean_count:.2f}", color="gray", fontsize=8)
 
     nx.draw_networkx_edges(G, pos, alpha=0.3, width=rels["edge"])
@@ -180,9 +162,9 @@ def plot_network(top20: pd.DataFrame, rels: pd.DataFrame):
     )
     nx.draw_networkx_labels(G, pos, font_size=8)
 
-    plt.xlabel("Edge count", fontsize=10)
-    plt.ylabel("Node count", fontsize=10)
-    plt.title("Top-20 Network (Louvain clusters)", fontsize=12)
+    plt.title("Top-20 Network (Louvain)", fontsize=12)
+    plt.xlabel("Edge count")
+    plt.ylabel("Node count")
     plt.grid(True, linestyle=":", alpha=0.3)
 
     buf = io.BytesIO()
@@ -192,7 +174,7 @@ def plot_network(top20: pd.DataFrame, rels: pd.DataFrame):
     return base64.b64encode(buf.read()).decode("utf-8")
 
 # ============================================================
-# 📤 Main Analysis Endpoint
+# 📤 Main Endpoint
 # ============================================================
 @app.post("/analyze", response_class=HTMLResponse)
 async def analyze(mode: str = Form(...), file: UploadFile = File(...)):
@@ -202,7 +184,7 @@ async def analyze(mode: str = Form(...), file: UploadFile = File(...)):
     except Exception as e:
         return HTMLResponse(f"<h3>❌ Could not read file: {e}</h3>")
 
-    # === MODE 1: Abstracts (1-column or DOI) ===
+    # ---------- Mode 1 ----------
     if mode == "mode1":
         client = get_gpt_client(filename)
         all_terms = []
@@ -220,7 +202,7 @@ async def analyze(mode: str = Form(...), file: UploadFile = File(...)):
         edges = build_coword_edges(df_terms)
         lang_display = detect_language(" ".join(df_terms.iloc[0].astype(str)))
 
-    # === MODE 2: Co-word Matrix ===
+    # ---------- Mode 2 ----------
     elif mode == "mode2":
         lang_display = detect_language(" ".join(df.columns))
         edges = build_coword_edges(df)
@@ -234,7 +216,7 @@ async def analyze(mode: str = Form(...), file: UploadFile = File(...)):
 
     img64 = plot_network(top20, rels)
 
-    # save in memory for downloads
+    # store downloadable CSVs
     vbuf, rbuf = io.StringIO(), io.StringIO()
     top20.to_csv(vbuf, index=False); rels.to_csv(rbuf, index=False)
     app.state.vertices = io.BytesIO(vbuf.getvalue().encode("utf-8"))
@@ -243,7 +225,7 @@ async def analyze(mode: str = Form(...), file: UploadFile = File(...)):
     html = f"""
     <h2>✅ Analysis Complete ({mode})</h2>
     <p>Detected Language: <b>{lang_display}</b></p>
-    <p>Top-20 nodes selected using R-style rule (Louvain clustering).</p>
+    <p>Top-20 nodes selected by Louvain clustering.</p>
     <img src="data:image/png;base64,{img64}" alt="Network Plot"
          style="max-width:95%;border:1px solid #ccc"/><br><br>
     <a href="/download_vertices" target="_blank">📥 Download Vertices CSV</a><br>
@@ -277,7 +259,7 @@ async def download_relations():
     )
 
 # ============================================================
-# 🏁 Local Test Run
+# 🏁 Local Run
 # ============================================================
 if __name__ == "__main__":
     import uvicorn
