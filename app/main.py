@@ -15,7 +15,8 @@ app = FastAPI()
 # ------------------------------------------------------------
 # Serve static assets (index.html, style.css, sample CSVs)
 # ------------------------------------------------------------
-app.mount("/", StaticFiles(directory="app", html=True), name="static")
+
+app.mount("/", StaticFiles(directory=".", html=True), name="static")
 
 # ------------------------------------------------------------
 # Compute AAC and draw simple weighted network
