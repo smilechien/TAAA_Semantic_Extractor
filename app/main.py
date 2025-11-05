@@ -1,9 +1,8 @@
 # ================================================================
-# 🌐 TAAA Semantic–Co-Word Analyzer (Stable v2)
-#  - Compatible with OpenAI Python SDK v1.x+
-#  - Two modes: Abstract (GPT/DOI) or Co-word matrix
-#  - Louvain clustering + top-20 rule
-#  - μ(edge)/μ(count) labeled plot
+# 🌐 TAAA Semantic–Co-Word Analyzer (Render-Safe Version)
+#  - FastAPI backend (two modes)
+#  - Louvain clustering, top-20 rule
+#  - μ(edge)/μ(count) plot with labels
 # ================================================================
 
 from fastapi import FastAPI, UploadFile, File
@@ -17,15 +16,24 @@ from langdetect import detect
 from openai import OpenAI
 
 # ------------------------------------------------
-# ⚙️ App initialization
+# ⚙️ Initialize app
 # ------------------------------------------------
 app = FastAPI(
     title="TAAA Semantic–Co-Word Analyzer",
-    description="Auto-detect mode from uploaded CSV and perform multilingual co-word analysis",
-    version="2.2.0"
+    description="Auto-detect mode from uploaded CSV; multilingual semantic and co-word analysis.",
+    version="2.3.0"
 )
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# ------------------------------------------------
+# 🧠 Safe GPT client (Render proxy-clean)
+# ------------------------------------------------
+def get_client():
+    key = os.getenv("OPENAI_API_KEY")
+    if not key:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    for var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]:
+        os.environ.pop(var, None)
+    return OpenAI(api_key=key)
 
 # ------------------------------------------------
 # 🏠 Home route
@@ -36,10 +44,10 @@ def home():
         html = open("index.html", "r", encoding="utf-8").read()
         return HTMLResponse(content=html)
     except Exception as e:
-        return HTMLResponse(f"<h3>Error loading index.html:</h3><p>{e}</p>")
+        return HTMLResponse(f"<h3>Error loading page:</h3><p>{e}</p>")
 
 # ------------------------------------------------
-# 📤 Upload and analyze
+# 📤 Upload + Analyze
 # ------------------------------------------------
 @app.post("/analyze_csv")
 async def analyze_csv(file: UploadFile = File(...)):
@@ -49,7 +57,6 @@ async def analyze_csv(file: UploadFile = File(...)):
     except Exception as e:
         return {"error": f"❌ Unable to read CSV: {e}"}
 
-    # ---------- Mode detection ----------
     mode = "mode1" if df.shape[1] == 1 else "mode2"
 
     # ---------- Mode 1: Abstract / DOI ----------
@@ -57,7 +64,7 @@ async def analyze_csv(file: UploadFile = File(...)):
         all_terms = []
         for _, row in df.iterrows():
             text = str(row.iloc[0]).strip()
-            if re.match(r"^10\.\d{4,9}/", text):     # DOI → abstract
+            if re.match(r"^10\.\d{4,9}/", text):   # DOI → abstract
                 text = fetch_abstract_from_doi(text)
             lang = detect_language(text)
             terms = extract_terms_gpt(filename, text, lang)
@@ -74,11 +81,11 @@ async def analyze_csv(file: UploadFile = File(...)):
 
     top20, rels = louvain_top20(edges)
     if top20.empty:
-        return {"error": "No valid edges or terms found."}
+        return {"error": "No valid terms or edges found."}
 
     img64 = plot_network(top20, rels)
 
-    # save results
+    # temporary CSVs
     tmp_v = tempfile.NamedTemporaryFile(delete=False, suffix="_vertices.csv")
     tmp_r = tempfile.NamedTemporaryFile(delete=False, suffix="_relations.csv")
     top20.to_csv(tmp_v.name, index=False, encoding="utf-8-sig")
@@ -101,11 +108,10 @@ async def download(path: str):
     return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
 
 # ------------------------------------------------
-# 🧠 Keyword extraction (GPT)
+# 🧠 GPT keyword extraction
 # ------------------------------------------------
 def extract_terms_gpt(filename: str, text: str, lang: str):
-    if "smilechien" not in filename.lower():
-        # fallback simple tokenizer
+    if "smilechien" not in filename.lower():  # public mode
         words = re.findall(r"[\w\-]+", text)
         return ", ".join(sorted(set(words))[:10])
 
@@ -113,6 +119,7 @@ def extract_terms_gpt(filename: str, text: str, lang: str):
         return ""
     prompt = f"Extract 10 key semantic terms in {lang}, comma-separated, from:\n{text}"
     try:
+        client = get_client()
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
@@ -123,7 +130,7 @@ def extract_terms_gpt(filename: str, text: str, lang: str):
         return f"Error: {e}"
 
 # ------------------------------------------------
-# 🌏 Language detection helper
+# 🌏 Language detection
 # ------------------------------------------------
 def detect_language(text: str):
     try:
@@ -136,7 +143,7 @@ def detect_language(text: str):
     }.get(code.lower(), code)
 
 # ------------------------------------------------
-# 🔍 DOI → abstract
+# 🔍 DOI → Abstract
 # ------------------------------------------------
 def fetch_abstract_from_doi(doi: str):
     for u in [f"https://api.crossref.org/works/{doi}",
@@ -153,7 +160,7 @@ def fetch_abstract_from_doi(doi: str):
     return ""
 
 # ------------------------------------------------
-# 🧩 Build edge list
+# 🧩 Build co-word edges
 # ------------------------------------------------
 def build_edges(df: pd.DataFrame):
     pairs = []
@@ -221,7 +228,7 @@ def plot_network(top20, rels):
     return base64.b64encode(buf.read()).decode()
 
 # ------------------------------------------------
-# 🚀 Local dev entry
+# 🚀 Local run
 # ------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
