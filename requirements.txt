@@ -2,7 +2,7 @@ fastapi
 uvicorn
 pandas
 networkx
-openai>=1.0.0
+matplotlib
 python-multipart
-jinja2
+
 
