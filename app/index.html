@@ -1,63 +1,50 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <title>TAAA Semantic Extractor</title>
-  <style>
-    body {
-      font-family: "Segoe UI", sans-serif;
-      background: #f7f9fb;
-      color: #222;
-      padding: 40px;
-      line-height: 1.6;
-    }
-    h1 { color: #007acc; }
-    a { color: #00897b; text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    button {
-      padding: 10px 18px;
-      background-color: #007acc;
-      color: #fff;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-    button:hover { background-color: #005a99; }
-    input[type=file] { margin: 15px 0; }
-    .container {
-      max-width: 720px;
-      background: white;
-      padding: 30px;
-      border-radius: 12px;
-      box-shadow: 0 0 8px rgba(0,0,0,0.1);
-    }
-  </style>
+<meta charset="utf-8">
+<title>TAAA Semantic–Co-Word Analyzer (Louvain + μ-Labeled)</title>
+<style>
+body { font-family: Arial, sans-serif; background: #f9f9f9; margin: 40px; color: #222; }
+h1 { color: #003366; }
+form { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 0 8px #ccc; }
+select, input[type=file] { width: 100%; padding: 8px; margin: 8px 0; border: 1px solid #ccc; border-radius: 6px; }
+button { background: #0078D7; color: #fff; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; }
+button:hover { background: #005fa3; }
+footer { margin-top: 40px; color: gray; font-size: 13px; }
+</style>
 </head>
 <body>
-  <div class="container">
-    <h1>🧭 TAAA Semantic Extractor</h1>
-    <h3>Global Multilingual Keyword System</h3>
+<h1>TAAA Semantic–Co-Word Analyzer</h1>
+<p>Unified platform for multilingual abstract and co-word analysis using Louvain clustering and R-inspired top-20 logic.</p>
 
-    <p>🌐 <b>International Mode Enabled</b><br>
-    Automatically detects and adapts to Chinese, English, Japanese, Korean, French, Spanish, and more.<br>
-    Keywords are generated in the same or relevant academic language automatically.<br>
-    Supports multilingual abstracts for global research — powered by GPT-4o-mini.<br>
-    ⚡ Auto-Detect Mode: Detects input language automatically and outputs keywords in context.<br>
-    💬 Bilingual Mode: Always generates both Chinese and English keywords.</p>
+<form id="uploadForm" enctype="multipart/form-data">
+  <label for="mode">Select Analysis Mode:</label>
+  <select id="mode" name="mode" required>
+    <option value="mode1">Mode 1 – Abstract (via GPT / DOI)</option>
+    <option value="mode2">Mode 2 – Co-word CSV</option>
+  </select>
 
-    <hr>
+  <label for="file">Upload CSV File:</label>
+  <input type="file" id="file" name="file" accept=".csv" required>
 
-    <form action="/analyze_csv" method="post" enctype="multipart/form-data">
-      <label><b>📄 拖放或點擊以上傳 CSV 檔案 / Drag & Drop or Click to Upload CSV File</b></label><br>
-      <input type="file" name="file" accept=".csv" required><br>
-      <button type="submit">⬆️ 上傳並分析 / Upload & Analyze</button>
-    </form>
+  <button type="submit">⬆️ Upload & Analyze</button>
+</form>
 
-    <p style="margin-top:20px;">
-      📂 範例檔案 / Sample Files<br>
-      📥 <a href="/sample_abstracts.csv">中文範例 CSV</a> 🌏
-      <a href="/sample_abstracts_bilingual.csv">中英對照範例 CSV</a>
-    </p>
-  </div>
+<div id="result" style="margin-top:30px;"></div>
+
+<script>
+document.getElementById('uploadForm').addEventListener('submit', async function(e){
+  e.preventDefault();
+  const formData = new FormData(this);
+  document.getElementById('result').innerHTML = "⏳ Processing... please wait.";
+  const response = await fetch('/analyze', { method: 'POST', body: formData });
+  const html = await response.text();
+  document.getElementById('result').innerHTML = html;
+});
+</script>
+
+<footer>
+  <p>© 2025 TAAA Semantic–Co-Word Analyzer | Supports English, Chinese, Japanese, Korean, French, Spanish | DOI-enabled | Louvain clustering with μ-labeled plot</p>
+</footer>
 </body>
 </html>
