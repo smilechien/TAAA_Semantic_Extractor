@@ -1,5 +1,8 @@
 fastapi
 uvicorn
-openai
 pandas
+networkx
+openai>=1.0.0
 python-multipart
+jinja2
+
