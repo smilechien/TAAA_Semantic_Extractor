@@ -1,72 +1,53 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>TAAA Semantic + Cluster Visualizer (AAC)</title>
-<script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
-<style>
-body {font-family:"Segoe UI",sans-serif;margin:2em;}
-.upload-box{border:2px dashed #aaa;padding:30px;text-align:center;width:60%;margin:auto;border-radius:12px;cursor:pointer;}
-#graph{width:100%;height:80vh;margin-top:20px;}
-button{padding:10px 20px;font-size:16px;margin:10px;}
-</style>
+<meta charset="utf-8">
+<title>TAAA Semantic–Co-Word Analyzer (Auto Mode Select)</title>
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<h1>TAAA Semantic–Co-Word Analyzer</h1>
+<p>Upload your CSV file. The app will automatically choose:</p>
+<ul>
+  <li><b>Mode 1</b> – single column → Abstracts (via GPT / DOI, only 1 column)</li>
+  <li><b>Mode 2</b> – multiple columns → Co-word matrix(at least 2 columns)</li>
+</ul>
+ 
 
-<h2>🌐 TAAA Semantic + Cluster Visualizer (AAC Metric)</h2>
-<p>Upload a CSV containing <b>abstract</b> column. It extracts keywords, builds a top-20 network, computes AAC and draws cluster relations.</p>
+<form action="/analyze_csv" method="post" enctype="multipart/form-data">
 
-<div class="upload-box" onclick="document.getElementById('file').click()">📤 Click or Drag to Upload CSV</div>
-<input id="file" type="file" style="display:none" />
-<br><button onclick="runVisualization()">Run Visualization</button>
+  <label for="file">Upload CSV file:</label>
+  <input type="file" id="file" name="file" accept=".csv" required>
+  <button type="submit">Upload &amp; Analyze</button>
+</form>
 
-<div id="graph"></div>
-<div id="downloads" style="margin-top:10px;text-align:center;"></div>
+<div id="result" style="margin-top:30px;"></div>
 
 <script>
-async function runVisualization(){
-  const f=document.getElementById('file');
-  if(!f.files.length) return alert("Please choose a CSV file.");
-  const fd=new FormData(); fd.append("file",f.files[0]);
-  const res=await fetch("/visualize",{method:"POST",body:fd});
-  const data=await res.json();
-  if(data.error) return alert(data.error);
+document.getElementById('uploadForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const fileInput = document.getElementById('file');
+  const file = fileInput.files[0];
+  if (!file) return;
 
-  const N=data.nodes, E=data.edges, meanX=data.meanX, meanY=data.meanY, aac=data.aac;
+  const text = await file.text();
+  const firstLine = text.split(/\r?\n/)[0];
+  const columnCount = firstLine.split(',').length;
+  const mode = columnCount === 1 ? 'mode1' : 'mode2';
 
-  // Edge trace (width ∝ weight)
-  const edgeTrace={
-    x:E.flatMap(e=>[N.find(n=>n.id===e.source).x,N.find(n=>n.id===e.target).x,null]),
-    y:E.flatMap(e=>[N.find(n=>n.id===e.source).y,N.find(n=>n.id===e.target).y,null]),
-    mode:'lines',
-    line:{width:E.map(e=>1+2*e.weight),color:'#bbb'},
-    hoverinfo:'none'
-  };
+  const formData = new FormData();
+  formData.append('mode', mode);
+  formData.append('file', file);
 
-  // Node trace (color = cluster, size = frequency)
-  const nodeTrace={
-    x:N.map(n=>n.x), y:N.map(n=>n.y),
-    text:N.map(n=>`${n.id}<br>Cluster ${n.cluster}<br>Freq: ${n.freq}`),
-    mode:'markers+text', textposition:'top center',
-    marker:{size:N.map(n=>8+n.freq),color:N.map(n=>n.cluster),colorscale:'Viridis',showscale:true},
-    hoverinfo:'text'
-  };
-
-  const meanXline={type:'line',x0:meanX,x1:meanX,y0:-1,y1:1,line:{color:'red',dash:'dot'}};
-  const meanYline={type:'line',x0:-1,x1:1,y0:meanY,y1:meanY,line:{color:'red',dash:'dot'}};
-
-  Plotly.newPlot('graph',[edgeTrace,nodeTrace],{
-    title:`Top-20 Co-Word Clusters  |  AAC = ${aac}`,
-    shapes:[meanXline,meanYline],
-    xaxis:{showgrid:false,zeroline:false,visible:false},
-    yaxis:{showgrid:false,zeroline:false,visible:false}
-  });
-
-  // Download links
-  const d=document.getElementById('downloads');
-  d.innerHTML=`<a href="${data.download.keywords}" download="taaa_keywords.csv">⬇️ Download Keywords CSV</a> &nbsp;&nbsp;
-               <a href="${data.download.clusters}" download="taaa_clusters.csv">⬇️ Download Clusters CSV</a>`;
-}
+  document.getElementById('result').innerHTML = "⏳ Processing... please wait.";
+  const res = await fetch('/analyze', { method: 'POST', body: formData });
+  const html = await res.text();
+  document.getElementById('result').innerHTML = html;
+});
 </script>
+
+<footer>
+  <p>© 2025 TAAA Semantic–Co-Word Analyzer | Automatic Mode Detection | English-only UI</p>
+</footer>
 </body>
 </html>
