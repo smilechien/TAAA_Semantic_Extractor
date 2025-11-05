@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>TAAA Semantic Extractor</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>TAAA Semantic Extractor</h1>
+        <p>上傳包含摘要欄位的 CSV 檔案，系統將使用 GPT-4o-mini 自動萃取語義關鍵詞。</p>
+
+        <div class="toggle-container">
+            <label class="switch">
+                <input type="checkbox" id="mode-toggle">
+                <span class="slider round"></span>
+            </label>
+            <span id="mode-label">🌞 亮色模式</span>
+        </div>
+
+        <form id="upload-form">
+            <input type="file" id="file" accept=".csv" required>
+            <button type="submit">📤 上傳並分析</button>
+        </form>
+
+        <div id="status">
+            <div id="loading" class="dots"><span>.</span><span>.</span><span>.</span></div>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById("upload-form");
+        const statusDiv = document.getElementById("status");
+        const loading = document.getElementById("loading");
+
+        form.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const fileInput = document.getElementById("file");
+            if (!fileInput.files.length) return;
+
+            const formData = new FormData();
+            formData.append("file", fileInput.files[0]);
+            loading.style.display = "inline-block";
+            statusDiv.innerHTML = "⏳ 分析中，請稍候...";
+
+            const response = await fetch("/analyze_csv", { method: "POST", body: formData });
+            if (response.ok) {
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "taaa_keywords.csv";
+                a.click();
+                statusDiv.innerHTML = "✅ 分析完成！結果已下載。";
+            } else {
+                statusDiv.innerHTML = "❌ 上傳失敗或伺服器錯誤。";
+            }
+            loading.style.display = "none";
+        });
+
+        const toggle = document.getElementById("mode-toggle");
+        const label = document.getElementById("mode-label");
+        toggle.addEventListener("change", () => {
+            document.body.classList.toggle("dark-mode");
+            label.textContent = toggle.checked ? "🌙 暗色模式" : "🌞 亮色模式";
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+{
+  "openapi": "3.0.2",
+  "info": {
+    "title": "TAAA Semantic Extractor API",
+    "version": "1.0.0",
+    "description": "Upload a CSV of abstracts and get GPT-extracted semantic keywords as a downloadable CSV."
+  },
+  "paths": {
+    "/analyze_csv": {
+      "post": {
+        "summary": "Analyze uploaded CSV and extract keywords",
+        "description": "Uploads a CSV with an `abstract` column, calls GPT-4o-mini to extract semantic keywords for each row, and returns a new CSV file.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "CSV file containing at least an `abstract` column"
+                  }
+                },
+                "required": ["file"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "CSV file with extracted keywords",
+            "content": {
+              "text/csv": {
+                "schema": { "type": "string", "format": "binary" }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "servers": [
+    { "url": "https://taaa-semantic-extractor.onrender.com" }
+  ]
+}
