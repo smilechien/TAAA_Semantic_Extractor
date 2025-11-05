@@ -12,8 +12,10 @@
   <li><b>Mode 1</b> – single column → Abstracts (via GPT / DOI, only 1 column)</li>
   <li><b>Mode 2</b> – multiple columns → Co-word matrix(at least 2 columns)</li>
 </ul>
+ 
 
-<form id="uploadForm" enctype="multipart/form-data">
+<form action="/analyze_csv" method="post" enctype="multipart/form-data">
+
   <label for="file">Upload CSV file:</label>
   <input type="file" id="file" name="file" accept=".csv" required>
   <button type="submit">Upload &amp; Analyze</button>
