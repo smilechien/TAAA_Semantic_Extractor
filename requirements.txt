@@ -5,5 +5,5 @@ pandas==2.2.3
 networkx==3.4.2
 matplotlib==3.9.2
 langdetect==1.0.9
-openai==1.50.2
+openai==1.35.13      # ✅ Render-safe version
 requests==2.32.3
