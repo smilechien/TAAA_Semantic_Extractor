@@ -2,49 +2,50 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>TAAA Semantic–Co-Word Analyzer (Louvain + μ-Labeled)</title>
-<style>
-body { font-family: Arial, sans-serif; background: #f9f9f9; margin: 40px; color: #222; }
-h1 { color: #003366; }
-form { background: #fff; padding: 20px; border-radius: 10px; box-shadow: 0 0 8px #ccc; }
-select, input[type=file] { width: 100%; padding: 8px; margin: 8px 0; border: 1px solid #ccc; border-radius: 6px; }
-button { background: #0078D7; color: #fff; padding: 10px 20px; border: none; border-radius: 6px; cursor: pointer; }
-button:hover { background: #005fa3; }
-footer { margin-top: 40px; color: gray; font-size: 13px; }
-</style>
+<title>TAAA Semantic–Co-Word Analyzer (Auto Mode Select)</title>
+<link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <h1>TAAA Semantic–Co-Word Analyzer</h1>
-<p>Unified platform for multilingual abstract and co-word analysis using Louvain clustering and R-inspired top-20 logic.</p>
+<p>Upload your CSV file. The app will automatically choose:</p>
+<ul>
+  <li><b>Mode 1</b> – single column → Abstracts (via GPT / DOI)</li>
+  <li><b>Mode 2</b> – multiple columns → Co-word matrix</li>
+</ul>
 
 <form id="uploadForm" enctype="multipart/form-data">
-  <label for="mode">Select Analysis Mode:</label>
-  <select id="mode" name="mode" required>
-    <option value="mode1">Mode 1 – Abstract (via GPT / DOI)</option>
-    <option value="mode2">Mode 2 – Co-word CSV</option>
-  </select>
-
-  <label for="file">Upload CSV File:</label>
+  <label for="file">Upload CSV file:</label>
   <input type="file" id="file" name="file" accept=".csv" required>
-
-  <button type="submit">⬆️ Upload & Analyze</button>
+  <button type="submit">Upload &amp; Analyze</button>
 </form>
 
 <div id="result" style="margin-top:30px;"></div>
 
 <script>
-document.getElementById('uploadForm').addEventListener('submit', async function(e){
+document.getElementById('uploadForm').addEventListener('submit', async e => {
   e.preventDefault();
-  const formData = new FormData(this);
+  const fileInput = document.getElementById('file');
+  const file = fileInput.files[0];
+  if (!file) return;
+
+  const text = await file.text();
+  const firstLine = text.split(/\r?\n/)[0];
+  const columnCount = firstLine.split(',').length;
+  const mode = columnCount === 1 ? 'mode1' : 'mode2';
+
+  const formData = new FormData();
+  formData.append('mode', mode);
+  formData.append('file', file);
+
   document.getElementById('result').innerHTML = "⏳ Processing... please wait.";
-  const response = await fetch('/analyze', { method: 'POST', body: formData });
-  const html = await response.text();
+  const res = await fetch('/analyze', { method: 'POST', body: formData });
+  const html = await res.text();
   document.getElementById('result').innerHTML = html;
 });
 </script>
 
 <footer>
-  <p>© 2025 TAAA Semantic–Co-Word Analyzer | Supports English, Chinese, Japanese, Korean, French, Spanish | DOI-enabled | Louvain clustering with μ-labeled plot</p>
+  <p>© 2025 TAAA Semantic–Co-Word Analyzer | Automatic Mode Detection | English-only UI</p>
 </footer>
 </body>
 </html>
