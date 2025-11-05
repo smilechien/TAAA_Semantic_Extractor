@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>TAAA Semantic Extractor | 語義關鍵詞萃取系統</title>
+<style>
+  body {
+    font-family: "Segoe UI", "Noto Sans TC", sans-serif;
+    background: var(--bg, #fafafa);
+    color: var(--fg, #222);
+    text-align: center;
+    margin: 40px;
+    transition: background 0.3s, color 0.3s;
+  }
+  h1 {
+    color: #0066cc;
+  }
+  .dark {
+    --bg: #1e1e1e;
+    --fg: #f5f5f5;
+  }
+  .container {
+    border: 2px dashed #bbb;
+    border-radius: 10px;
+    padding: 30px;
+    width: 400px;
+    margin: 20px auto;
+    cursor: pointer;
+  }
+  .container.dragover {
+    border-color: #0066cc;
+    background: #f0f8ff;
+  }
+  input[type="file"] {
+    display: none;
+  }
+  button {
+    background: #0066cc;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    padding: 10px 18px;
+    font-size: 15px;
+    cursor: pointer;
+    margin: 8px;
+  }
+  button:hover {
+    background: #004999;
+  }
+  #progress {
+    width: 80%;
+    height: 20px;
+    background: #eee;
+    border-radius: 10px;
+    margin: 15px auto;
+    overflow: hidden;
+  }
+  #bar {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(90deg, #00c6ff, #0072ff);
+    transition: width 0.3s;
+  }
+  #toggleMode {
+    position: absolute;
+    top: 10px;
+    right: 20px;
+    cursor: pointer;
+    font-size: 14px;
+    color: #555;
+  }
+  .sample-links a {
+    display: inline-block;
+    margin: 6px;
+    color: #0066cc;
+    text-decoration: none;
+  }
+  .sample-links a:hover {
+    text-decoration: underline;
+  }
+</style>
+</head>
+<body>
+  <div id="toggleMode">🌞 Light Mode / 亮色模式</div>
+
+  <h1>TAAA Semantic Extractor<br><small>語義關鍵詞萃取系統</small></h1>
+  <p>
+    上傳包含 <b>abstract</b> 欄位的 CSV 檔案，系統將使用 <b>GPT-4o-mini</b> 自動萃取語義關鍵詞。<br>
+    Upload a CSV file containing an <b>abstract</b> column — the system will automatically extract semantic keywords using <b>GPT-4o-mini</b>.
+  </p>
+
+  <!-- 📁 File upload area -->
+  <div class="container" id="dropZone">
+    <p id="dropText">📄 拖放或點擊以上傳 CSV 檔案 / Drag & Drop or Click to Upload CSV File</p>
+    <input type="file" id="fileInput" accept=".csv" />
+  </div>
+
+  <!-- 🚀 Action button -->
+  <button id="uploadBtn">⬆️ 上傳並分析 / Upload & Analyze</button>
+
+  <div id="progress"><div id="bar"></div></div>
+  <p id="status"></p>
+
+  <!-- 📥 Sample download links -->
+  <div class="sample-links">
+    <p>📂 範例檔案 / Sample Files</p>
+    <a href="/sample_abstracts.csv" download>📥 中文範例 CSV (Chinese Only)</a>
+    <a href="/sample_abstracts_bilingual.csv" download>🌏 中英對照範例 CSV (Bilingual)</a>
+  </div>
+
+  <script>
+    const dropZone = document.getElementById("dropZone");
+    const fileInput = document.getElementById("fileInput");
+    const uploadBtn = document.getElementById("uploadBtn");
+    const bar = document.getElementById("bar");
+    const status = document.getElementById("status");
+    const toggleMode = document.getElementById("toggleMode");
+
+    // 🌗 Theme toggle
+    toggleMode.addEventListener("click", () => {
+      document.body.classList.toggle("dark");
+      toggleMode.textContent = document.body.classList.contains("dark")
+        ? "🌙 Dark Mode / 暗色模式"
+        : "🌞 Light Mode / 亮色模式";
+    });
+
+    // 📁 Drag & Drop logic
+    dropZone.addEventListener("click", () => fileInput.click());
+    dropZone.addEventListener("dragover", e => {
+      e.preventDefault();
+      dropZone.classList.add("dragover");
+    });
+    dropZone.addEventListener("dragleave", () => dropZone.classList.remove("dragover"));
+    dropZone.addEventListener("drop", e => {
+      e.preventDefault();
+      dropZone.classList.remove("dragover");
+      fileInput.files = e.dataTransfer.files;
+      status.textContent = `📂 已選擇 Selected: ${fileInput.files[0].name}`;
+    });
+
+    // 🚀 Upload and analyze
+    uploadBtn.addEventListener("click", async () => {
+      const file = fileInput.files[0];
+      if (!file) {
+        alert("⚠️ 請先選擇一個 CSV 檔案。\nPlease select a CSV file first.");
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      bar.style.width = "20%";
+      status.textContent = "⏫ 上傳中 / Uploading...";
+
+      try {
+        const response = await fetch("/analyze_csv", {
+          method: "POST",
+          body: formData
+        });
+
+        if (!response.ok) throw new Error("伺服器錯誤 / Server error");
+
+        bar.style.width = "80%";
+        status.textContent = "🧠 分析中 / Analyzing, please wait...";
+
+        const blob = await response.blob();
+        bar.style.width = "100%";
+
+        const link = document.createElement("a");
+        link.href = window.URL.createObjectURL(blob);
+        link.download = "taaa_keywords.csv";
+        link.click();
+
+        status.textContent = "✅ 分析完成，結果已自動下載！ / Analysis complete, file downloaded!";
+        setTimeout(() => { bar.style.width = "0%"; }, 3000);
+      } catch (err) {
+        status.textContent = "❌ 錯誤 / Error: " + err.message;
+      }
+    });
+  </script>
+</body>
+</html>
