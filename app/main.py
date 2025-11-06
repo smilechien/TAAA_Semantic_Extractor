@@ -1,10 +1,10 @@
 # ================================================================
-# 🌐 TAAA Semantic–Co-Word Analyzer (Robust Encoding + Column Filter)
+# 🌐 TAAA Semantic–Co-Word Analyzer (v2.9, Robust Chinese CSV Reader)
 # Author: Smile
 # Description:
-#   • Mode 1  → Abstract / DOI column (GPT/DOI extraction)
-#   • Mode 2  → Multi-column co-word terms
-#   • Robust encoding auto-detection + text-only column filtering
+#   • Mode 1 → Abstract / DOI column (GPT/DOI extraction)
+#   • Mode 2 → Multi-column co-word terms
+#   • Full encoding detection (UTF-8-SIG / Big5 / CP950)
 # ================================================================
 
 from fastapi import FastAPI, UploadFile, File
@@ -18,43 +18,55 @@ from openai import OpenAI
 
 app = FastAPI(
     title="TAAA Semantic–Co-Word Analyzer",
-    description="Multilingual Louvain clustering with encoding auto-detect & text-only filtering",
-    version="2.8.0"
+    description="Multilingual Louvain clustering with robust CSV decoding",
+    version="2.9.0"
 )
 
 # ------------------------- GPT setup ----------------------------
 def get_client():
     key = os.getenv("OPENAI_API_KEY")
     if not key:
-        raise RuntimeError("OPENAI_API_KEY not set")
+        raise RuntimeError("❌ OPENAI_API_KEY not set in environment")
+    # Remove proxy interference (Render safe)
     for var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]:
         os.environ.pop(var, None)
     return OpenAI(api_key=key)
 
-# ------------------------- Helpers ------------------------------
-def safe_read_csv(uploaded):
-    """Safely read CSV with multiple encoding fallbacks."""
-    content = uploaded.read()
-    uploaded.file.seek(0)  # reset for potential reuse
-    enc_guess = chardet.detect(content).get("encoding", "utf-8")
 
-    for enc in [enc_guess, "utf-8", "utf-8-sig", "big5", "cp950", "latin1"]:
+# ------------------------- Safe CSV Reader ----------------------
+def safe_read_csv(uploaded: UploadFile) -> pd.DataFrame:
+    """Safely read CSV with auto-detection + Chinese encoding fallback."""
+    raw = uploaded.file.read()              # read bytes once
+    uploaded.file.seek(0)                   # reset pointer
+    guess = chardet.detect(raw).get("encoding") or "utf-8"
+
+    # Prioritize common East-Asian encodings
+    encodings = [guess, "utf-8-sig", "utf-8", "big5", "cp950", "latin1"]
+
+    for enc in encodings:
         try:
-            uploaded.file.seek(0)
-            df = pd.read_csv(uploaded.file, sep=None, engine="python", encoding=enc)
-            return df
-        except Exception:
-            uploaded.file.seek(0)
+            df = pd.read_csv(io.BytesIO(raw), sep=None, engine="python", encoding=enc)
+            if not df.empty:
+                print(f"✅ CSV decoded successfully using: {enc}")
+                return df
+        except Exception as e:
+            print(f"⚠️ Failed decoding with {enc}: {e}")
             continue
-    raise UnicodeDecodeError("All encodings failed")
 
+    raise UnicodeDecodeError(
+        "utf-8", raw, 0, 1, "All encoding attempts failed. Try saving file as UTF-8-SIG."
+    )
+
+
+# ------------------------- Helpers -------------------------------
 def is_text_column(series: pd.Series) -> bool:
-    """Return True if column likely contains text, not numbers/dates."""
+    """Return True if column likely contains text."""
     sample = series.dropna().astype(str).head(10)
     if sample.empty:
         return False
     numeric_ratio = sum(s.replace('.', '', 1).isdigit() for s in sample) / len(sample)
-    return numeric_ratio < 0.5  # mostly non-numeric → keep
+    return numeric_ratio < 0.5
+
 
 def detect_language(text):
     try:
@@ -67,10 +79,13 @@ def detect_language(text):
     }
     return mapping.get(code[:2], code)
 
+
 def split_terms(t):
-    return [x.strip() for x in re.split(r"[;,、，\t]", str(t)) if x.strip()]
+    return [x.strip() for x in re.split(r"[;,、，\t ]+", str(t)) if x.strip()]
+
 
 def fetch_abstract_from_doi(doi):
+    """Try to fetch abstract using CrossRef or OpenAlex."""
     for u in [
         f"https://api.crossref.org/works/{doi}",
         f"https://api.openalex.org/works/doi:{doi}"
@@ -86,17 +101,21 @@ def fetch_abstract_from_doi(doi):
                 if abs_:
                     return re.sub(r"<[^>]+>", "", abs_)
         except Exception:
-            pass
+            continue
     return ""
 
-# ------------------------- GPT term extractor -------------------
+
+# ------------------------- GPT Extractor -------------------------
 def extract_terms_gpt(filename, text, lang):
+    """Extract 10 key semantic terms (fallback = regex if no GPT trigger)."""
+    if not text.strip():
+        return ""
+    # Only use GPT when file name contains 'smilechien' to save tokens
     if "smilechien" not in filename.lower():
         words = re.findall(r"[A-Za-z\u4e00-\u9fff\-]+", text)
         return ", ".join(sorted(set(words))[:10])
-    if not text.strip():
-        return ""
-    prompt = f"Extract 10 key semantic terms in {lang}, comma-separated:\n{text}"
+
+    prompt = f"Extract 10 key semantic terms in {lang}, comma-separated:\n{text[:1500]}"
     try:
         c = get_client()
         r = c.chat.completions.create(
@@ -108,14 +127,14 @@ def extract_terms_gpt(filename, text, lang):
     except Exception as e:
         return f"Error: {e}"
 
-# ------------------------- Edge builder --------------------------
+
+# ------------------------- Edge Builder --------------------------
 def build_edges(df):
-    if df.empty:
-        return pd.DataFrame(columns=["Source", "Target", "edge"])
+    """Construct Source–Target pairs for all co-occurring terms."""
     pairs = []
     for _, row in df.iterrows():
         terms = [str(t).strip() for t in row if str(t).strip() not in ["", "nan", "None"]]
-        terms = list(dict.fromkeys(terms))
+        terms = list(dict.fromkeys(terms))  # deduplicate
         if len(terms) < 2:
             continue
         for i in range(len(terms)):
@@ -124,10 +143,10 @@ def build_edges(df):
     if not pairs:
         return pd.DataFrame(columns=["Source", "Target", "edge"])
     e = pd.DataFrame(pairs, columns=["Source", "Target", "edge"])
-    e = e.groupby(["Source", "Target"], as_index=False)["edge"].sum()
-    return e
+    return e.groupby(["Source", "Target"], as_index=False)["edge"].sum()
 
-# ------------------------- Louvain cluster -----------------------
+
+# ------------------------- Louvain Cluster -----------------------
 def louvain_cluster(edges):
     G = nx.from_pandas_edgelist(edges, "Source", "Target", "edge")
     comms = nx.community.louvain_communities(G, seed=42)
@@ -139,7 +158,8 @@ def louvain_cluster(edges):
     rels = edges.query("Source in @top20.term and Target in @top20.term")
     return top20, rels
 
-# ------------------------- Plot ---------------------------------
+
+# ------------------------- Plot Network --------------------------
 def plot_network(vertices, rels):
     plt.figure(figsize=(7, 6))
     G = nx.from_pandas_edgelist(rels, "Source", "Target", "edge")
@@ -160,10 +180,12 @@ def plot_network(vertices, rels):
     buf.seek(0)
     return base64.b64encode(buf.read()).decode()
 
-# ------------------------- Web Routes ----------------------------
+
+# ------------------------- Routes --------------------------------
 @app.get("/", response_class=HTMLResponse)
 def home():
     return HTMLResponse(open("index.html", "r", encoding="utf-8").read())
+
 
 @app.post("/analyze_csv")
 async def analyze_csv(file: UploadFile = File(...)):
@@ -177,7 +199,7 @@ async def analyze_csv(file: UploadFile = File(...)):
     if df.empty:
         return HTMLResponse("<h3>❌ Your file has no usable rows.</h3>")
 
-    # keep only columns with mostly text
+    # keep only mostly text columns
     text_cols = [c for c in df.columns if is_text_column(df[c])]
     df = df[text_cols]
     if df.empty:
@@ -199,6 +221,7 @@ async def analyze_csv(file: UploadFile = File(...)):
             all_terms.append(split_terms(terms))
         df_terms = pd.DataFrame(all_terms)
         edges = build_edges(df_terms)
+
     # ---------- Mode 2 ----------
     else:
         lang = detect_language(" ".join(df.columns))
@@ -232,12 +255,15 @@ async def analyze_csv(file: UploadFile = File(...)):
     """
     return HTMLResponse(content=html)
 
+
 @app.get("/download")
 async def download(path: str):
     return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
+
 
 # ------------------------- Run locally ---------------------------
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 10000))
+    print(f"🚀 Running on http://0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
