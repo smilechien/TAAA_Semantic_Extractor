@@ -1,0 +1,66 @@
+# ============================================================
+# 🧹 Git Ignore for TAAA Semantic–Co-Word Analyzer
+# ============================================================
+
+# --- Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+.env
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# --- Logs & Temp
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+.cache/
+.temp/
+.tmp/
+
+# --- Local configs
+.env.local
+.env.*
+!env.example
+
+# --- Render or Docker cache
+.render/
+docker-compose.override.yml
+Dockerfile*
+
+# --- Data outputs
+*.png
+*.svg
+*.pdf
+*.xlsx
+*.json
+*.zip
+*.gz
+*.tar
+*.tsv
+*.sav
+*.rds
+*.rda
+
+# --- Local test files
+/test_*/
+dev_*/
+scratch_*/
+
+# --- Ensure static sample data are kept
+!app/static/abstracts_demo.csv
+!app/static/animalzoocoword.csv
+
+# --- Ignore generated analysis files
+*_vertices.csv
+*_relations.csv
+theme_assignments.csv

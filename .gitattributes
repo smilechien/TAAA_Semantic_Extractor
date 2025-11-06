@@ -1,0 +1,35 @@
+# ============================================================
+# 🌐 Git Attributes for TAAA Semantic–Co-Word Analyzer
+# Purpose:
+#   • Preserve UTF-8-SIG CSV encoding (no CRLF conversions)
+#   • Disable diff normalization for multilingual text files
+#   • Exclude static files from Git LFS
+# ============================================================
+
+# --- CSV and text files (preserve BOM + UTF-8)
+*.csv text working-tree-encoding=UTF-8 eol=lf
+*.txt text working-tree-encoding=UTF-8 eol=lf
+*.tsv text working-tree-encoding=UTF-8 eol=lf
+
+# --- HTML, YAML, JSON, and Python scripts
+*.html text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.json text eol=lf
+*.py text eol=lf
+
+# --- Fonts, images, binaries (no diff)
+*.ttf binary
+*.otf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+
+# --- Prevent GitHub LFS from taking CSVs
+*.csv -text -diff
+*.csv filter=lfs diff=lfs merge=lfs -text !export-ignore
+
+# --- Make sure .gitattributes itself is LF
+.gitattributes text eol=lf
