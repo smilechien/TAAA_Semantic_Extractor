@@ -10,5 +10,5 @@ scikit-learn==1.5.2
 chardet==5.2.0
 python-multipart==0.0.20
 requests==2.32.3
-langdetect       # ← version unpinned for Render
+langid        # 👈 replaces langdetect
 fonttools==4.54.1
