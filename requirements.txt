@@ -1,5 +1,4 @@
---only-binary=:all:
-pandas==2.2.2
+pandas==2.2.3
 numpy==1.26.4
 fastapi==0.115.2
 uvicorn==0.32.0
