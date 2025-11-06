@@ -1,13 +1,9 @@
 services:
   - type: web
-    name: taaa-semantic-analyzer
+    name: taaa-semantic-extractor
     env: python
-    buildCommand: |
-      apt-get update && apt-get install -y fonts-noto-cjk
-      pip install --upgrade pip
-      pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt
     startCommand: cd app && uvicorn main:app --host 0.0.0.0 --port 10000
     envVars:
-      - key: PORT
-        value: 10000
-    staticPublishPath: app/static
+      - key: PYTHON_VERSION
+        value: 3.13.4
