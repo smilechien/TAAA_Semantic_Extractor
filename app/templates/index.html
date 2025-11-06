@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>🌐 TAAA Semantic–Co-Word Analyzer</title>
+<style>
+body {
+  font-family: 'Segoe UI', 'Noto Sans TC', sans-serif;
+  background: #fafafa;
+  text-align: center;
+  margin: 50px;
+}
+.container {
+  background: #fff;
+  padding: 30px;
+  border-radius: 14px;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+  display: inline-block;
+  width: 460px;
+}
+h1 { margin-top: 0; color: #2a2a2a; }
+h2 { color: #555; font-weight: 400; margin-top: -5px; }
+label { font-weight: bold; }
+button {
+  margin-top: 15px;
+  background: #0066cc;
+  color: white;
+  border: none;
+  padding: 10px 24px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 15px;
+}
+button:hover { background: #004a99; }
+select, input[type=file] { margin-top: 10px; }
+.spinner { display: none; margin-top: 20px; font-style: italic; color: #666; }
+.indicator { margin-top: 10px; font-size: 14px; color: #777; }
+footer { margin-top: 30px; font-size: 13px; color: #888; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🌐 TAAA Semantic–Co-Word Analyzer</h1>
+  <h2>Multilingual Semantic Network & TAAA Theme Assignment Tool</h2>
+
+  <form id="uploadForm" enctype="multipart/form-data">
+    <label for="mode">Select Analysis Mode:</label><br>
+    <select id="mode" name="mode">
+      <option value="abstract">🧠 Abstract Mode</option>
+      <option value="coword">🐾 Co-Word Mode</option>
+    </select><br><br>
+
+    <input type="file" id="file" name="file" accept=".csv" required><br>
+    <button type="submit">🚀 Analyze</button>
+  </form>
+
+  <div class="spinner" id="spinner">⏳ Processing… please wait</div>
+  <div class="indicator" id="engineIndicator">🔍 Engine: detecting…</div>
+  <div id="resultLink"></div>
+
+  <footer>
+    Try Abstract Mode with multilingual texts or Co-Word Mode with animal attributes<br>
+    © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v2.4
+  </footer>
+</div>
+
+<script>
+const form = document.getElementById('uploadForm');
+const spinner = document.getElementById('spinner');
+const indicator = document.getElementById('engineIndicator');
+const resultLink = document.getElementById('resultLink');
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fileInput = document.getElementById('file');
+  const mode = document.getElementById('mode').value;
+  if (!fileInput.files.length) return;
+
+  spinner.style.display = 'block';
+  indicator.textContent = '🔍 Engine: auto-selecting (GPT / TF-IDF)…';
+  resultLink.innerHTML = '';
+
+  const data = new FormData();
+  data.append('file', fileInput.files[0]);
+  data.append('mode', mode);
+
+  try {
+    const response = await fetch('/analyze_csv', { method: 'POST', body: data });
+    const html = await response.text();
+    document.open(); document.write(html); document.close();
+  } catch {
+    spinner.style.display = 'none';
+    indicator.textContent = '❌ Error during analysis.';
+  }
+});
+</script>
+</body>
+</html>
