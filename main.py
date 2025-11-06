@@ -1,6 +1,6 @@
-import os, io
+import os, io, random
 import pandas as pd
-import chardet, random
+import chardet
 import matplotlib.pyplot as plt
 import networkx as nx
 from pathlib import Path
@@ -12,9 +12,10 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
+import plotly.express as px
 
 # -------------------------------------------------------------
-#  App Setup
+#  App setup
 # -------------------------------------------------------------
 app = FastAPI()
 BASE_DIR = Path(__file__).resolve().parent
@@ -28,7 +29,7 @@ app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 #  Helpers
 # -------------------------------------------------------------
 def smart_read_csv(file_bytes: bytes):
-    """Try UTF-8 → UTF-8-SIG → CP950 decoding automatically."""
+    """Auto-detect encoding (UTF-8 / UTF-8-SIG / CP950)."""
     for enc in ["utf-8", "utf-8-sig", "cp950"]:
         try:
             return pd.read_csv(io.BytesIO(file_bytes), encoding=enc)
@@ -37,8 +38,8 @@ def smart_read_csv(file_bytes: bytes):
     raise ValueError("Unable to decode CSV file.")
 
 def detect_mode(df: pd.DataFrame):
-    text_cols = [c for c in df.columns if df[c].dtype == "object"]
-    return ("abstract", text_cols[0]) if len(text_cols) == 1 else ("coword", text_cols)
+    """Simplified rule: 1-column → Abstract; multi-column → Co-word."""
+    return ("abstract", df.columns[0]) if df.shape[1] == 1 else ("coword", list(df.columns))
 
 def detect_language(df: pd.DataFrame):
     """Rough bilingual detection using langcodes (Render-safe)."""
@@ -54,8 +55,6 @@ def detect_language(df: pd.DataFrame):
     return "other"
 
 # -------------------------------------------------------------
-#  Routes
-# -------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def home():
     path = TEMPLATE_DIR / "index.html"
@@ -67,12 +66,14 @@ async def preview_csv(file: UploadFile = File(...)):
     df = smart_read_csv(await file.read())
     mode, cols = detect_mode(df)
     lang = detect_language(df)
+
     color = "green" if mode == "abstract" else "blue"
     label_zh = "🧠 摘要模式" if mode == "abstract" else "🐾 共詞模式"
     hint_zh  = "偵測到單欄 → 使用摘要分析" if mode == "abstract" else "偵測到多欄 → 使用共詞分析"
     label_en = "🧠 Abstract Mode" if mode == "abstract" else "🐾 Co-Word Mode"
     hint_en  = "Detected single column → Abstract analysis" if mode == "abstract" else "Detected multi-column → Co-Word analysis"
     label, hint = (label_zh, hint_zh) if lang == "zh" else (label_en, hint_en)
+
     preview = df.head(5).to_html(index=False, escape=False)
     return HTMLResponse(f"""
         <h3>📄 Preview</h3>{preview}
@@ -114,7 +115,7 @@ async def analyze_csv(file: UploadFile = File(...)):
         for u, v in edges:
             G.add_edge(u, v)
 
-    # ---------- Compute Degree / Top Terms ----------
+    # ---------- Degree & Top Terms ----------
     deg = dict(G.degree())
     top_terms = sorted(deg.items(), key=lambda x: x[1], reverse=True)[:20]
 
@@ -126,39 +127,36 @@ async def analyze_csv(file: UploadFile = File(...)):
     plt.savefig(STATIC_OUT / "theme_bar.png", dpi=150)
     plt.close()
 
-    # ---------- Scatter Plot (Theme Visualization) ----------
-    # create feature matrix for top terms only
+    # ---------- Interactive Plotly Scatter ----------
     terms = [t[0] for t in top_terms]
     vec = TfidfVectorizer()
     X = vec.fit_transform(terms)
     coords = PCA(n_components=2, random_state=42).fit_transform(X.toarray())
-
-    # cluster into 3–6 groups based on term similarity
     n_clusters = min(6, max(2, len(terms)//4))
     km = KMeans(n_clusters=n_clusters, n_init="auto", random_state=42)
     labels = km.fit_predict(coords)
+    df_plot = pd.DataFrame({
+        "x": coords[:,0],
+        "y": coords[:,1],
+        "term": terms,
+        "cluster": [f"Theme {l+1}" for l in labels]
+    })
 
-    plt.figure(figsize=(7,6))
-    for i in range(n_clusters):
-        pts = coords[labels==i]
-        plt.scatter(pts[:,0], pts[:,1], s=120, alpha=0.6,
-                    label=f"Theme {i+1}", 
-                    color=plt.cm.tab10(i/10))
-        for (x,y,t) in zip(pts[:,0], pts[:,1], [terms[k] for k,l in enumerate(labels) if l==i]):
-            plt.text(x, y, t, fontsize=9, ha="center", va="center")
-    plt.legend()
-    plt.title(f"Theme Scatter ({mode.title()} Mode)")
-    plt.axis("off")
-    plt.tight_layout()
-    plt.savefig(STATIC_OUT / "theme_scatter.png", dpi=150)
-    plt.close()
+    fig = px.scatter(
+        df_plot, x="x", y="y", color="cluster", text="term",
+        title=f"Theme Scatter ({mode.title()} Mode)",
+        hover_data=["term"],
+        color_discrete_sequence=px.colors.qualitative.Plotly
+    )
+    fig.update_traces(textposition="top center", marker=dict(size=16, opacity=0.8))
+    fig.update_layout(showlegend=True, height=600, width=700)
+    fig.write_html(str(STATIC_OUT / "theme_scatter.html"), include_plotlyjs="cdn")
 
-    # ---------- CSV Outputs ----------
+    # ---------- Save CSVs ----------
     pd.DataFrame(G.nodes, columns=["term"]).to_csv(STATIC_OUT / "vertices.csv", index=False)
     pd.DataFrame(G.edges, columns=["source","target"]).to_csv(STATIC_OUT / "relations.csv", index=False)
     pd.DataFrame({"theme":[t[0] for t in top_terms]}).to_csv(STATIC_OUT / "themes.csv", index=False)
 
-    # ---------- HTML Result ----------
     return HTMLResponse(f"""
         <h2>✅ Analysis Complete</h2>
         <p>Detected Mode: <b>{mode}</b></p>
@@ -168,7 +166,7 @@ async def analyze_csv(file: UploadFile = File(...)):
           <li><a href="/static/outputs/relations.csv" download>🔸 Relations</a></li>
           <li><a href="/static/outputs/themes.csv" download>🧩 Themes</a></li>
           <li><a href="/static/outputs/theme_bar.png" download>📊 Theme Bar</a></li>
-          <li><a href="/static/outputs/theme_scatter.png" download>🌈 Theme Scatter</a></li>
+          <li><a href="/static/outputs/theme_scatter.html" target="_blank">🌈 Theme Scatter (Interactive)</a></li>
         </ul>
-        <footer>© 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v9.6</footer>
+        <footer>© 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v9.7 stable</footer>
     """)
