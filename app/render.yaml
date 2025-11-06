@@ -1,24 +1,13 @@
-# ================================================================
-# 🚀 Render Deployment Configuration for TAAA Semantic–Co-Word Analyzer
-# Version: v4.5+
-# ================================================================
-
 services:
   - type: web
     name: taaa-semantic-analyzer
     env: python
-
     buildCommand: |
-      # Install multilingual fonts for publication-ready plots
       apt-get update && apt-get install -y fonts-noto-cjk
-      # Install all Python dependencies
+      pip install --upgrade pip
       pip install -r requirements.txt
-
     startCommand: cd app && uvicorn main:app --host 0.0.0.0 --port 10000
-
     envVars:
       - key: PORT
         value: 10000
-
-    # ✅ Optional: make /app/static files downloadable via /static/
     staticPublishPath: app/static
