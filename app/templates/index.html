@@ -33,42 +33,105 @@ button {
 }
 button:hover { background: #004a99; }
 select, input[type=file] { margin-top: 10px; }
-.spinner { display: none; margin-top: 20px; font-style: italic; color: #666; }
+.spinner { display: none; margin-top: 20px; font-style: italic; color: #555; transition: 0.3s; }
 .indicator { margin-top: 10px; font-size: 14px; color: #777; }
 footer { margin-top: 30px; font-size: 13px; color: #888; }
+.lang-toggle { margin-top: 10px; cursor: pointer; font-size: 13px; color: #1a73e8; }
 </style>
 </head>
 <body>
 <div class="container">
-  <h1>🌐 TAAA Semantic–Co-Word Analyzer</h1>
-  <h2>Multilingual Semantic Network & TAAA Theme Assignment Tool</h2>
+  <h1 id="title">🌐 TAAA Semantic–Co-Word Analyzer</h1>
+  <h2 id="subtitle">Multilingual Semantic Network & TAAA Theme Assignment Tool</h2>
 
   <form id="uploadForm" enctype="multipart/form-data">
-    <label for="mode">Select Analysis Mode:</label><br>
+    <label id="modeLabel" for="mode">Select Analysis Mode:</label><br>
     <select id="mode" name="mode">
       <option value="abstract">🧠 Abstract Mode</option>
       <option value="coword">🐾 Co-Word Mode</option>
     </select><br><br>
 
     <input type="file" id="file" name="file" accept=".csv" required><br>
-    <button type="submit">🚀 Analyze</button>
+    <button type="submit" id="analyzeBtn">🚀 Analyze</button>
   </form>
 
   <div class="spinner" id="spinner">⏳ Processing… please wait</div>
   <div class="indicator" id="engineIndicator">🔍 Engine: detecting…</div>
   <div id="resultLink"></div>
 
-  <footer>
+  <div class="lang-toggle" id="toggleLang">🌐 中文顯示 / English</div>
+
+  <footer id="footer">
     Try Abstract Mode with multilingual texts or Co-Word Mode with animal attributes<br>
-    © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v2.4
+    © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v6.1
   </footer>
 </div>
 
 <script>
+// ======== Language Packs ========
+const textEN = {
+  title: "🌐 TAAA Semantic–Co-Word Analyzer",
+  subtitle: "Multilingual Semantic Network & TAAA Theme Assignment Tool",
+  modeLabel: "Select Analysis Mode:",
+  analyzeBtn: "🚀 Analyze",
+  spinnerSteps: [
+    "⏳ Processing… please wait",
+    "🔍 Analyzing text…",
+    "🧠 Extracting semantic themes…",
+    "🎨 Rendering visual maps…"
+  ],
+  engine: "🔍 Engine: detecting…",
+  footer: "Try Abstract Mode with multilingual texts or Co-Word Mode with animal attributes<br>© 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v6.1"
+};
+
+const textZH = {
+  title: "🌐 TAAA 語義共詞分析器",
+  subtitle: "多語言語義網絡與主題分配工具",
+  modeLabel: "選擇分析模式：",
+  analyzeBtn: "🚀 開始分析",
+  spinnerSteps: [
+    "⏳ 正在處理，請稍候…",
+    "🔍 分析中…",
+    "🧠 正在擷取語義主題…",
+    "🎨 正在生成視覺化圖表…"
+  ],
+  engine: "🔍 引擎：自動偵測中…",
+  footer: "可嘗試多語摘要模式或動物屬性共詞模式<br>© 2025 Smile Chien · TAAA 語義共詞分析器 v6.1"
+};
+
+// ======== Detect and Apply ========
+function detectLang() {
+  const lang = navigator.language || navigator.userLanguage;
+  return lang.startsWith("zh") ? "zh" : "en";
+}
+
+function applyLang(lang) {
+  const t = lang === "zh" ? textZH : textEN;
+  document.getElementById("title").innerHTML = t.title;
+  document.getElementById("subtitle").innerHTML = t.subtitle;
+  document.getElementById("modeLabel").innerHTML = t.modeLabel;
+  document.getElementById("analyzeBtn").innerHTML = t.analyzeBtn;
+  document.getElementById("engineIndicator").innerHTML = t.engine;
+  document.getElementById("footer").innerHTML = t.footer;
+  localStorage.setItem("taaa_lang", lang);
+}
+
+// ======== Language Toggle ========
+document.getElementById("toggleLang").addEventListener("click", () => {
+  const current = localStorage.getItem("taaa_lang") || detectLang();
+  const next = current === "zh" ? "en" : "zh";
+  applyLang(next);
+});
+
+// ======== Initialize ========
+applyLang(localStorage.getItem("taaa_lang") || detectLang());
+
+// ======== Form Submission + Spinner ========
 const form = document.getElementById('uploadForm');
 const spinner = document.getElementById('spinner');
 const indicator = document.getElementById('engineIndicator');
 const resultLink = document.getElementById('resultLink');
+let spinnerTimer;
 
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -76,9 +139,22 @@ form.addEventListener('submit', async (e) => {
   const mode = document.getElementById('mode').value;
   if (!fileInput.files.length) return;
 
+  const lang = localStorage.getItem("taaa_lang") || detectLang();
+  const t = lang === "zh" ? textZH : textEN;
+  let i = 0;
+
   spinner.style.display = 'block';
-  indicator.textContent = '🔍 Engine: auto-selecting (GPT / TF-IDF)…';
+  spinner.textContent = t.spinnerSteps[0];
+  indicator.textContent = lang === "zh"
+      ? "🔍 引擎：自動選擇中（GPT / TF-IDF）…"
+      : "🔍 Engine: auto-selecting (GPT / TF-IDF)…";
   resultLink.innerHTML = '';
+
+  // Dynamic spinner text every 2.5 seconds
+  spinnerTimer = setInterval(() => {
+    i = (i + 1) % t.spinnerSteps.length;
+    spinner.textContent = t.spinnerSteps[i];
+  }, 2500);
 
   const data = new FormData();
   data.append('file', fileInput.files[0]);
@@ -87,12 +163,17 @@ form.addEventListener('submit', async (e) => {
   try {
     const response = await fetch('/analyze_csv', { method: 'POST', body: data });
     const html = await response.text();
+    clearInterval(spinnerTimer);
     document.open(); document.write(html); document.close();
   } catch {
+    clearInterval(spinnerTimer);
     spinner.style.display = 'none';
-    indicator.textContent = '❌ Error during analysis.';
+    indicator.textContent = lang === "zh"
+      ? "❌ 分析時發生錯誤。"
+      : "❌ Error during analysis.";
   }
 });
 </script>
 </body>
 </html>
+
