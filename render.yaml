@@ -2,7 +2,7 @@ services:
   - type: web
     name: taaa-semantic-analyzer
     env: python
-    pythonVersion: 3.11          # ✅ Stable for pandas, matplotlib, FastAPI
+    runtime: python-3.11       # ✅ Force Python 3.11 runtime
     buildCommand: |
       apt-get update && apt-get install -y fonts-noto-cjk
       pip install --upgrade pip wheel setuptools
