@@ -1,10 +1,10 @@
 # ================================================================
-# 🌐 TAAA Semantic–Co-Word Analyzer (v3.0)
+# 🌐 TAAA Semantic–Co-Word Analyzer (v3.1, Render-safe)
 # Author: Smile
 # Description:
 #   • Reads Chinese/English CSVs (Big5 / CP950 / UTF-8-SIG)
 #   • GPT-4o-mini keyword extraction
-#   • Louvain clustering with mean-reference scatter plot
+#   • Louvain clustering + scatter plot with mean lines
 # ================================================================
 
 from fastapi import FastAPI, UploadFile, File
@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 import pandas as pd
 import matplotlib.pyplot as plt
 import networkx as nx
-import tempfile, io, os, re, chardet
+import tempfile, io, os, re, chardet, base64
 from openai import OpenAI
 
 # ------------------------------------------------
@@ -20,33 +20,38 @@ from openai import OpenAI
 # ------------------------------------------------
 app = FastAPI(
     title="TAAA Semantic–Co-Word Analyzer",
-    description="Multilingual keyword extraction + network clustering",
-    version="3.0.0"
+    description="Multilingual keyword extraction + Louvain clustering",
+    version="3.1.0"
 )
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-
 # ------------------------------------------------
-# 🧩 Safe CSV Reader (Chinese compatible)
+# 🧩 Render-safe CSV Reader
 # ------------------------------------------------
 def safe_read_csv(uploaded: UploadFile) -> pd.DataFrame:
-    """Detect and read CSV with multiple encoding fallbacks."""
+    """
+    Robust reader: decodes raw bytes and re-encodes to UTF-8-SIG.
+    Works with Big5 / CP950 / UTF-8-SIG / Latin1 CSVs on Render.
+    """
     raw = uploaded.file.read()
     uploaded.file.seek(0)
+
     guess = chardet.detect(raw).get("encoding") or "utf-8"
     encodings = [guess, "utf-8-sig", "utf-8", "big5", "cp950", "latin1"]
 
     for enc in encodings:
         try:
-            df = pd.read_csv(io.BytesIO(raw), sep=None, engine="python", encoding=enc)
+            text = raw.decode(enc, errors="ignore")
+            buf = io.BytesIO(text.encode("utf-8-sig"))
+            df = pd.read_csv(buf, sep=None, engine="python")
             if not df.empty:
-                print(f"✅ Decoded using {enc}")
+                print(f"✅ Successfully decoded using {enc}")
                 return df
         except Exception as e:
-            print(f"⚠️ Failed with {enc}: {e}")
+            print(f"⚠️ Failed decoding with {enc}: {e}")
             continue
-    raise UnicodeDecodeError("utf-8", raw, 0, 1, "All encodings failed.")
-
+    raise UnicodeDecodeError("utf-8", raw, 0, 1,
+                             "All encodings failed — try saving file as UTF-8-SIG.")
 
 # ------------------------------------------------
 # 🧠 Keyword Extraction
@@ -72,7 +77,6 @@ def extract_keywords(text: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
-
 # ------------------------------------------------
 # 🔗 Edge Builder
 # ------------------------------------------------
@@ -89,37 +93,36 @@ def build_edges(df_kw):
     e = pd.DataFrame(pairs, columns=["Source", "Target", "edge"])
     return e.groupby(["Source", "Target"], as_index=False)["edge"].sum()
 
-
 # ------------------------------------------------
-# 🎨 Network Plot (with x/y axes & mean lines)
+# 🎨 Network Plot (x/y axes + red mean lines)
 # ------------------------------------------------
 def plot_network(vertices):
     plt.figure(figsize=(7, 6))
-    # 2-D scatter layout for visual reference
     x = vertices["count"].rank().values
     y = vertices["cluster"]
-    plt.scatter(x, y, s=vertices["count"] * 8, c=vertices["cluster"], cmap="tab10", alpha=0.8)
+    plt.scatter(x, y, s=vertices["count"] * 8,
+                c=vertices["cluster"], cmap="tab10", alpha=0.8, edgecolor="k")
 
-    # Mean reference lines
+    # mean reference lines
     xm, ym = x.mean(), y.mean()
     plt.axvline(x=xm, color="red", linestyle="--", linewidth=1)
     plt.axhline(y=ym, color="red", linestyle="--", linewidth=1)
 
-    # Labels
+    # labels
     for i, row in vertices.iterrows():
         plt.text(x[i] + 0.1, y[i], row["term"], fontsize=8)
 
-    plt.xlabel("Term Rank (Count order)")
+    plt.xlabel("Term Rank (by Count)")
     plt.ylabel("Cluster ID")
     plt.title("Louvain Keyword Network (Mean Reference Lines in Red)")
     plt.grid(alpha=0.3, linestyle=":")
-    buf = io.BytesIO()
     plt.tight_layout()
+
+    buf = io.BytesIO()
     plt.savefig(buf, format="png", bbox_inches="tight")
     plt.close()
     buf.seek(0)
     return base64.b64encode(buf.read()).decode()
-
 
 # ------------------------------------------------
 # 🏠 Home Route
@@ -131,7 +134,6 @@ def home():
         return HTMLResponse(content=html)
     except Exception as e:
         return HTMLResponse(f"<h3>Error loading page:</h3><p>{e}</p>")
-
 
 # ------------------------------------------------
 # 📤 CSV Upload Route
@@ -146,14 +148,13 @@ async def analyze_csv(file: UploadFile = File(...)):
     if "abstract" not in df.columns:
         return HTMLResponse("<h3>❌ Missing 'abstract' column in CSV.</h3>")
 
-    # Extract keywords
     df["keywords"] = df["abstract"].apply(lambda x: extract_keywords(str(x)))
     edges = build_edges(df)
 
     if edges.empty:
         return HTMLResponse("<h3>❌ No valid co-word pairs detected.</h3>")
 
-    # Build Louvain clusters
+    # Louvain clustering
     G = nx.from_pandas_edgelist(edges, "Source", "Target", "edge")
     comms = nx.community.louvain_communities(G, seed=42)
     cmap = {n: i + 1 for i, c in enumerate(comms) for n in c}
@@ -162,8 +163,6 @@ async def analyze_csv(file: UploadFile = File(...)):
     deg["cluster"] = deg["term"].map(cmap)
     vertices = deg.sort_values("count", ascending=False).head(30)
 
-    # Plot network
-    import base64
     img64 = plot_network(vertices)
 
     tmp_v = tempfile.NamedTemporaryFile(delete=False, suffix="_vertices.csv")
@@ -173,26 +172,26 @@ async def analyze_csv(file: UploadFile = File(...)):
 
     html = f"""
     <h2>✅ Analysis Complete</h2>
-    <img src="data:image/png;base64,{img64}" style="max-width:95%;border:1px solid #ccc"/><br><br>
+    <img src="data:image/png;base64,{img64}"
+         style="max-width:95%;border:1px solid #ccc"/><br><br>
     <a href="/download?path={tmp_v.name}">📥 Vertices CSV</a><br>
     <a href="/download?path={tmp_r.name}">📥 Relations CSV</a>
     """
     return HTMLResponse(html)
-
 
 # ------------------------------------------------
 # 📥 Download Route
 # ------------------------------------------------
 @app.get("/download")
 async def download(path: str):
-    return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
-
+    return FileResponse(path, media_type="text/csv",
+                        filename=os.path.basename(path))
 
 # ------------------------------------------------
-# 🚀 Local Dev Entry Point
+# 🚀 Run Locally / on Render
 # ------------------------------------------------
 if __name__ == "__main__":
-    import uvicorn, base64
+    import uvicorn
     port = int(os.environ.get("PORT", 10000))
     print(f"🚀 Running on http://0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
