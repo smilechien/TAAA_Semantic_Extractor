@@ -1,89 +1,97 @@
-# ================================================================
-# 🌐 TAAA Semantic–Co-Word Analyzer (v3.1, Render-safe)
+# ============================================================
+# 🌐 TAAA Semantic–Co-Word Analyzer  v4.8
 # Author: Smile
-# Description:
-#   • Reads Chinese/English CSVs (Big5 / CP950 / UTF-8-SIG)
-#   • GPT-4o-mini keyword extraction
-#   • Louvain clustering + scatter plot with mean lines
-# ================================================================
+# ------------------------------------------------------------
+#  • GPT / TF-IDF hybrid semantic engine with retry
+#  • Multilingual fonts & bilingual labels
+#  • Scatter (Top-20 terms) + h-bar (Top-h themes)
+#  • Adds *_themed.csv  → theme per document (TAAA)
+#  • Red theme boxes on scatter for publication visuals
+# ============================================================
 
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 import pandas as pd
 import matplotlib.pyplot as plt
 import networkx as nx
-import tempfile, io, os, re, chardet, base64
+import tempfile, io, os, re, base64, chardet, time
+from sklearn.feature_extraction.text import TfidfVectorizer
 from openai import OpenAI
 
-# ------------------------------------------------
-# 🔧 Initialize
-# ------------------------------------------------
+# ------------------------------------------------------------
+# 🔧 App setup
+# ------------------------------------------------------------
 app = FastAPI(
     title="TAAA Semantic–Co-Word Analyzer",
-    description="Multilingual keyword extraction + Louvain clustering",
-    version="3.1.0"
+    description="Hybrid GPT/TF-IDF multilingual semantic analyzer with TAAA theme assignment",
+    version="4.8"
 )
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ------------------------------------------------
-# 🧩 Render-safe CSV Reader
-# ------------------------------------------------
+# ------------------------------------------------------------
+# 🩺 Health check
+# ------------------------------------------------------------
+@app.get("/health")
+async def health():
+    key_ok = bool(os.getenv("OPENAI_API_KEY"))
+    return {"status": "ok", "gpt_key_available": key_ok}
+
+# ------------------------------------------------------------
+# 🧩 Safe CSV reader
+# ------------------------------------------------------------
 def safe_read_csv(uploaded: UploadFile) -> pd.DataFrame:
-    """
-    Robust reader: decodes raw bytes and re-encodes to UTF-8-SIG.
-    Works with Big5 / CP950 / UTF-8-SIG / Latin1 CSVs on Render.
-    """
-    raw = uploaded.file.read()
-    uploaded.file.seek(0)
-
+    raw = uploaded.file.read(); uploaded.file.seek(0)
     guess = chardet.detect(raw).get("encoding") or "utf-8"
-    encodings = [guess, "utf-8-sig", "utf-8", "big5", "cp950", "latin1"]
-
-    for enc in encodings:
+    for enc in [guess, "utf-8-sig", "utf-8", "big5", "cp950", "latin1"]:
         try:
             text = raw.decode(enc, errors="ignore")
             buf = io.BytesIO(text.encode("utf-8-sig"))
             df = pd.read_csv(buf, sep=None, engine="python")
             if not df.empty:
-                print(f"✅ Successfully decoded using {enc}")
                 return df
-        except Exception as e:
-            print(f"⚠️ Failed decoding with {enc}: {e}")
+        except Exception:
             continue
-    raise UnicodeDecodeError("utf-8", raw, 0, 1,
-                             "All encodings failed — try saving file as UTF-8-SIG.")
+    raise UnicodeDecodeError("utf-8", raw, 0, 1, "Unable to decode CSV")
 
-# ------------------------------------------------
-# 🧠 Keyword Extraction
-# ------------------------------------------------
+# ------------------------------------------------------------
+# 🧠 GPT/TF-IDF hybrid keyword extractor (with retry)
+# ------------------------------------------------------------
 def extract_keywords(text: str) -> str:
     if not text or pd.isna(text):
         return ""
-    prompt = (
-        "請根據以下摘要內容，萃取 10 個具語義代表性的學術關鍵詞，"
-        "可為繁體中文或英文（依原文語言自動判斷），並用頓號（、）分隔。\n\n"
-        f"{text}"
-    )
-    try:
-        r = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
+    # --- GPT first ---
+    if os.getenv("OPENAI_API_KEY"):
+        prompt = (
+            "Extract 10 representative academic keywords from the following text "
+            "and separate them by commas:\n\n" + text
         )
-        kw = r.choices[0].message.content.strip()
-        kw = re.sub(r"[、;；\|／/，、\s]+", ", ", kw)
-        kw = re.sub(r",\s*,+", ", ", kw)
-        return kw.strip(" ,")
-    except Exception as e:
-        return f"Error: {e}"
+        for _ in range(3):
+            try:
+                r = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.2)
+                kw = r.choices[0].message.content.strip()
+                kw = re.sub(r"[、;；，\s]+", ", ", kw)
+                return kw
+            except Exception:
+                time.sleep(1)
+    # --- TF-IDF fallback ---
+    try:
+        vec = TfidfVectorizer(max_features=10, stop_words="english")
+        vec.fit([text])
+        return ", ".join(vec.get_feature_names_out())
+    except Exception:
+        return ""
 
-# ------------------------------------------------
-# 🔗 Edge Builder
-# ------------------------------------------------
+# ------------------------------------------------------------
+# 🔗 Build edges
+# ------------------------------------------------------------
 def build_edges(df_kw):
     pairs = []
     for _, row in df_kw.iterrows():
-        terms = [t.strip() for t in re.split(r"[,，、;；\s]+", str(row["keywords"])) if t.strip()]
+        terms = [t.strip() for t in re.split(r"[,，;；\s]+", str(row["keywords"])) if t.strip()]
         terms = list(dict.fromkeys(terms))
         for i in range(len(terms)):
             for j in range(i + 1, len(terms)):
@@ -93,51 +101,118 @@ def build_edges(df_kw):
     e = pd.DataFrame(pairs, columns=["Source", "Target", "edge"])
     return e.groupby(["Source", "Target"], as_index=False)["edge"].sum()
 
-# ------------------------------------------------
-# 🎨 Network Plot (x/y axes + red mean lines)
-# ------------------------------------------------
-def plot_network(vertices):
+# ------------------------------------------------------------
+# 🧩 Louvain cluster
+# ------------------------------------------------------------
+def louvain_cluster(edges):
+    G = nx.from_pandas_edgelist(edges, "Source", "Target", "edge")
+    comms = nx.community.louvain_communities(G, seed=42)
+    cmap = {n: i + 1 for i, c in enumerate(comms) for n in c}
+    deg = pd.Series(dict(G.degree(weight="edge")), name="count").reset_index()
+    deg.columns = ["term", "count"]
+    deg["cluster"] = deg["term"].map(cmap)
+    return deg, edges
+
+# ------------------------------------------------------------
+# 🎨 Enhanced Scatter Plot (Top-20 Terms + Red Theme Labels)
+# ------------------------------------------------------------
+def plot_scatter(vertices, topic_labels=None, lang="en"):
+    """Top-20 term scatter with multilingual fonts & red theme boxes."""
+    plt.rcParams["font.family"] = (
+        ["Noto Sans TC", "Microsoft JhengHei", "SimHei"]
+        if lang.startswith(("zh", "ja", "ko")) else ["Segoe UI", "Arial"]
+    )
+
     plt.figure(figsize=(7, 6))
     x = vertices["count"].rank().values
-    y = vertices["cluster"]
-    plt.scatter(x, y, s=vertices["count"] * 8,
-                c=vertices["cluster"], cmap="tab10", alpha=0.8, edgecolor="k")
+    y = vertices["edge"].values
+    clusters = vertices["cluster"].values
 
-    # mean reference lines
-    xm, ym = x.mean(), y.mean()
-    plt.axvline(x=xm, color="red", linestyle="--", linewidth=1)
-    plt.axhline(y=ym, color="red", linestyle="--", linewidth=1)
+    plt.scatter(x, y, s=vertices["count"]*45, c=clusters,
+                cmap="tab10", alpha=0.9, edgecolor="k")
 
-    # labels
-    for i, row in vertices.iterrows():
-        plt.text(x[i] + 0.1, y[i], row["term"], fontsize=8)
+    plt.axvline(x.mean(), color="red", ls="--", lw=1)
+    plt.axhline(y.mean(), color="red", ls="--", lw=1)
 
-    plt.xlabel("Term Rank (by Count)")
-    plt.ylabel("Cluster ID")
-    plt.title("Louvain Keyword Network (Mean Reference Lines in Red)")
-    plt.grid(alpha=0.3, linestyle=":")
-    plt.tight_layout()
+    # --- term labels ---
+    for idx, row in enumerate(vertices.itertuples()):
+        plt.text(x[idx]+0.15, y[idx], row.term, fontsize=8, color="black")
 
-    buf = io.BytesIO()
-    plt.savefig(buf, format="png", bbox_inches="tight")
-    plt.close()
-    buf.seek(0)
+    # --- red theme boxes ---
+    if topic_labels is not None and not topic_labels.empty:
+        centroids = (
+            vertices.groupby("cluster")[["count", "edge"]]
+            .mean()
+            .reset_index()
+            .merge(topic_labels, on="cluster", how="left")
+        )
+        for _, r in centroids.iterrows():
+            if pd.notna(r.get("topic_label", "")):
+                plt.text(
+                    r["count"], r["edge"] + 0.8, r["topic_label"],
+                    color="red", fontsize=11, fontweight="bold",
+                    ha="center",
+                    bbox=dict(facecolor="white", alpha=0.65,
+                              edgecolor="red", boxstyle="round,pad=0.35")
+                )
+
+    xlabel = "詞彙排名" if lang.startswith(("zh","ja","ko")) else "Term Rank"
+    ylabel = "共現頻率" if lang.startswith(("zh","ja","ko")) else "Co-occurrence Frequency"
+    title  = "關鍵詞散佈圖（含主題）" if lang.startswith(("zh","ja","ko")) else "Top-20 Terms Scatter Plot (with Themes)"
+
+    plt.xlabel(xlabel); plt.ylabel(ylabel); plt.title(title)
+    plt.grid(alpha=0.3, ls=":")
+    buf = io.BytesIO(); plt.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(); buf.seek(0)
     return base64.b64encode(buf.read()).decode()
 
-# ------------------------------------------------
-# 🏠 Home Route
-# ------------------------------------------------
+# ------------------------------------------------------------
+# 📊 h-bar Chart
+# ------------------------------------------------------------
+def plot_hbar(theme_freq, h_index, topic_labels):
+    plt.figure(figsize=(7,5))
+    merged = pd.merge(theme_freq, topic_labels, on="cluster", how="left").sort_values("freq", ascending=False)
+    plt.bar(merged["cluster"].astype(str), merged["freq"], color="skyblue", edgecolor="k")
+    plt.axhline(y=h_index, color="red", ls="--", lw=1.2)
+    for i, r in enumerate(merged.itertuples()):
+        plt.text(i, r.freq+0.5, str(r.topic_label), rotation=90, ha="center", fontsize=8)
+    plt.title(f"Top-h Core Themes (h={h_index}) – TAAA")
+    plt.xlabel("Theme (Cluster ID)"); plt.ylabel("Assigned Rows Count")
+    plt.tight_layout()
+    buf = io.BytesIO(); plt.savefig(buf, format="png", bbox_inches="tight")
+    plt.close(); buf.seek(0)
+    return base64.b64encode(buf.read()).decode()
+
+# ------------------------------------------------------------
+# 🧮 TAAA theme assignment
+# ------------------------------------------------------------
+def assign_themes(df, vertices, topic_labels):
+    mapping = dict(vertices[["term","cluster"]].values)
+    cluster_label = dict(topic_labels[["cluster","topic_label"]].values)
+    results=[]
+    for _, row in df.iterrows():
+        text=" ".join(map(str,row.values))
+        clusters=[mapping[t] for t in mapping if t in text]
+        if not clusters:
+            theme="Unassigned"
+        else:
+            mode=pd.Series(clusters).mode().iloc[0]
+            theme=cluster_label.get(mode,f"Cluster {mode}")
+        results.append(theme)
+    df_theme=df.copy()
+    df_theme.insert(0,"theme",results)
+    return df_theme
+
+# ------------------------------------------------------------
+# 🏠 Home
+# ------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def home():
-    try:
-        html = open("index.html", "r", encoding="utf-8").read()
-        return HTMLResponse(content=html)
-    except Exception as e:
-        return HTMLResponse(f"<h3>Error loading page:</h3><p>{e}</p>")
+    return HTMLResponse(open("index.html", encoding="utf-8").read())
 
-# ------------------------------------------------
-# 📤 CSV Upload Route
-# ------------------------------------------------
+# ------------------------------------------------------------
+# 📤 Analyze CSV
+# ------------------------------------------------------------
 @app.post("/analyze_csv")
 async def analyze_csv(file: UploadFile = File(...)):
     try:
@@ -145,53 +220,67 @@ async def analyze_csv(file: UploadFile = File(...)):
     except Exception as e:
         return HTMLResponse(f"<h3>❌ CSV read error: {e}</h3>")
 
-    if "abstract" not in df.columns:
-        return HTMLResponse("<h3>❌ Missing 'abstract' column in CSV.</h3>")
+    if df.shape[1]==1:
+        df.columns=["abstract"]
+        df["keywords"]=df["abstract"].apply(lambda x: extract_keywords(str(x)))
+    else:
+        df.columns=[c.strip() for c in df.columns]
+        df["keywords"]=df.apply(lambda r:", ".join([str(v) for v in r if pd.notna(v)]),axis=1)
 
-    df["keywords"] = df["abstract"].apply(lambda x: extract_keywords(str(x)))
-    edges = build_edges(df)
-
+    edges=build_edges(df)
     if edges.empty:
-        return HTMLResponse("<h3>❌ No valid co-word pairs detected.</h3>")
+        return HTMLResponse("<h3>❌ No co-word pairs found.</h3>")
 
-    # Louvain clustering
-    G = nx.from_pandas_edgelist(edges, "Source", "Target", "edge")
-    comms = nx.community.louvain_communities(G, seed=42)
-    cmap = {n: i + 1 for i, c in enumerate(comms) for n in c}
-    deg = pd.Series(dict(G.degree(weight="edge")), name="count").reset_index()
-    deg.columns = ["term", "count"]
-    deg["cluster"] = deg["term"].map(cmap)
-    vertices = deg.sort_values("count", ascending=False).head(30)
+    vertices,edges=louvain_cluster(edges)
+    vertices["edge"]=vertices["term"].map(lambda t: edges.query("Source==@t or Target==@t")["edge"].sum())
+    top20=vertices.sort_values("count",ascending=False).head(20)
 
-    img64 = plot_network(vertices)
+    # --- h-core metrics ---
+    theme_freq=vertices.groupby("cluster")["term"].count().reset_index(name="freq").sort_values("freq",ascending=False)
+    theme_freq["rank"]=range(1,len(theme_freq)+1)
+    h_index=int(max(theme_freq["rank"][theme_freq["freq"]>=theme_freq["rank"]],default=0))
+    topic_labels=vertices.groupby("cluster")["term"].apply(lambda x:", ".join(x.head(2))).reset_index(name="topic_label")
 
-    tmp_v = tempfile.NamedTemporaryFile(delete=False, suffix="_vertices.csv")
-    tmp_r = tempfile.NamedTemporaryFile(delete=False, suffix="_relations.csv")
-    vertices.to_csv(tmp_v.name, index=False, encoding="utf-8-sig")
-    edges.to_csv(tmp_r.name, index=False, encoding="utf-8-sig")
+    # --- plots ---
+    img_scatter=plot_scatter(top20, topic_labels)
+    img_bar=plot_hbar(theme_freq,h_index,topic_labels)
 
-    html = f"""
+    # --- TAAA assignment ---
+    df_theme=assign_themes(df,vertices,topic_labels)
+
+    # --- Save outputs ---
+    tmp_v=tempfile.NamedTemporaryFile(delete=False,suffix="_vertices.csv")
+    tmp_e=tempfile.NamedTemporaryFile(delete=False,suffix="_relations.csv")
+    tmp_t=tempfile.NamedTemporaryFile(delete=False,suffix="_themed.csv")
+    vertices.to_csv(tmp_v.name,index=False,encoding="utf-8-sig")
+    edges.to_csv(tmp_e.name,index=False,encoding="utf-8-sig")
+    df_theme.to_csv(tmp_t.name,index=False,encoding="utf-8-sig")
+
+    html=f"""
     <h2>✅ Analysis Complete</h2>
-    <img src="data:image/png;base64,{img64}"
-         style="max-width:95%;border:1px solid #ccc"/><br><br>
+    <h4>Scatter Plot (Top-20 Terms)</h4>
+    <img src="data:image/png;base64,{img_scatter}" style="max-width:95%;border:1px solid #ccc"/><br><br>
+    <h4>Bar Chart (Top-h Core Themes)</h4>
+    <img src="data:image/png;base64,{img_bar}" style="max-width:95%;border:1px solid #ccc"/><br><br>
     <a href="/download?path={tmp_v.name}">📥 Vertices CSV</a><br>
-    <a href="/download?path={tmp_r.name}">📥 Relations CSV</a>
+    <a href="/download?path={tmp_e.name}">📥 Relations CSV</a><br>
+    <a href="/download?path={tmp_t.name}">📥 Themed CSV (TAAA assignments)</a>
     """
     return HTMLResponse(html)
 
-# ------------------------------------------------
-# 📥 Download Route
-# ------------------------------------------------
+# ------------------------------------------------------------
+# 📥 Download route
+# ------------------------------------------------------------
 @app.get("/download")
 async def download(path: str):
-    return FileResponse(path, media_type="text/csv",
-                        filename=os.path.basename(path))
+    return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
 
-# ------------------------------------------------
-# 🚀 Run Locally / on Render
-# ------------------------------------------------
+# ------------------------------------------------------------
+# 🚀 Local / Render run
+# ------------------------------------------------------------
 if __name__ == "__main__":
-    import uvicorn
-    port = int(os.environ.get("PORT", 10000))
+    import uvicorn, locale
+    locale.setlocale(locale.LC_ALL, "")
+    port=int(os.environ.get("PORT",10000))
     print(f"🚀 Running on http://0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
