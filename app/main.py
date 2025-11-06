@@ -1,47 +1,63 @@
-# ============================================================
-# 🌐 TAAA Semantic–Co-Word Analyzer  v4.8
+# ================================================================
+# 🌐 TAAA Semantic–Co-Word Analyzer (v4.9 Render-Stable)
 # Author: Smile
-# ------------------------------------------------------------
-#  • GPT / TF-IDF hybrid semantic engine with retry
-#  • Multilingual fonts & bilingual labels
-#  • Scatter (Top-20 terms) + h-bar (Top-h themes)
-#  • Adds *_themed.csv  → theme per document (TAAA)
-#  • Red theme boxes on scatter for publication visuals
-# ============================================================
+# Description:
+#   - Multilingual keyword extraction (GPT-4o or TF-IDF fallback)
+#   - Louvain clustering + TAAA theme assignment
+#   - Robust retry logic and Render-compatible I/O
+#   - Auto font switching for Chinese/English
+# ================================================================
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import HTMLResponse, FileResponse
 import pandas as pd
 import matplotlib.pyplot as plt
 import networkx as nx
-import tempfile, io, os, re, base64, chardet, time
+import tempfile, io, os, re, time, base64, chardet
 from sklearn.feature_extraction.text import TfidfVectorizer
-from openai import OpenAI
+from sklearn.metrics.pairwise import cosine_similarity
+from langdetect import detect
+import openai
+from openai.error import APIError, RateLimitError, APITimeoutError
 
-# ------------------------------------------------------------
-# 🔧 App setup
-# ------------------------------------------------------------
+# ================================================================
+# 🚀 FastAPI App
+# ================================================================
 app = FastAPI(
     title="TAAA Semantic–Co-Word Analyzer",
-    description="Hybrid GPT/TF-IDF multilingual semantic analyzer with TAAA theme assignment",
-    version="4.8"
+    description="Hybrid GPT/TF-IDF semantic keyword and co-word network analyzer.",
+    version="4.9.0"
 )
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# ================================================================
+# ✅ Safe OpenAI Initialization (Render Compatible)
+# ================================================================
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# ------------------------------------------------------------
-# 🩺 Health check
-# ------------------------------------------------------------
-@app.get("/health")
-async def health():
-    key_ok = bool(os.getenv("OPENAI_API_KEY"))
-    return {"status": "ok", "gpt_key_available": key_ok}
+def call_gpt_with_retry(prompt, model="gpt-4o-mini", max_retries=3, delay=3):
+    """Safe GPT call with retries for transient API errors."""
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = openai.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+            )
+            return response.choices[0].message.content.strip()
+        except (APIError, RateLimitError, APITimeoutError) as e:
+            print(f"⚠️ API retry {attempt}/{max_retries}: {e}")
+            time.sleep(delay)
+        except Exception as e:
+            print(f"❌ Non-retryable error: {e}")
+            break
+    return None
 
-# ------------------------------------------------------------
-# 🧩 Safe CSV reader
-# ------------------------------------------------------------
+# ================================================================
+# 📥 CSV Reader (multi-encoding safe)
+# ================================================================
 def safe_read_csv(uploaded: UploadFile) -> pd.DataFrame:
-    raw = uploaded.file.read(); uploaded.file.seek(0)
+    raw = uploaded.file.read()
+    uploaded.file.seek(0)
     guess = chardet.detect(raw).get("encoding") or "utf-8"
     for enc in [guess, "utf-8-sig", "utf-8", "big5", "cp950", "latin1"]:
         try:
@@ -52,46 +68,43 @@ def safe_read_csv(uploaded: UploadFile) -> pd.DataFrame:
                 return df
         except Exception:
             continue
-    raise UnicodeDecodeError("utf-8", raw, 0, 1, "Unable to decode CSV")
+    raise UnicodeDecodeError("utf-8", raw, 0, 1, "All encodings failed")
 
-# ------------------------------------------------------------
-# 🧠 GPT/TF-IDF hybrid keyword extractor (with retry)
-# ------------------------------------------------------------
-def extract_keywords(text: str) -> str:
-    if not text or pd.isna(text):
-        return ""
-    # --- GPT first ---
-    if os.getenv("OPENAI_API_KEY"):
-        prompt = (
-            "Extract 10 representative academic keywords from the following text "
-            "and separate them by commas:\n\n" + text
-        )
-        for _ in range(3):
-            try:
-                r = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.2)
-                kw = r.choices[0].message.content.strip()
-                kw = re.sub(r"[、;；，\s]+", ", ", kw)
-                return kw
-            except Exception:
-                time.sleep(1)
-    # --- TF-IDF fallback ---
-    try:
-        vec = TfidfVectorizer(max_features=10, stop_words="english")
-        vec.fit([text])
-        return ", ".join(vec.get_feature_names_out())
-    except Exception:
-        return ""
+# ================================================================
+# 🧮 TF-IDF Keyword Extraction
+# ================================================================
+def extract_keywords_tfidf(docs, top_k=10):
+    vect = TfidfVectorizer(stop_words="english", max_features=5000)
+    X = vect.fit_transform(docs)
+    names = vect.get_feature_names_out()
+    keywords = []
+    for row in X:
+        top_idx = row.toarray().flatten().argsort()[-top_k:][::-1]
+        kw = ", ".join([names[i] for i in top_idx])
+        keywords.append(kw)
+    return keywords
 
-# ------------------------------------------------------------
-# 🔗 Build edges
-# ------------------------------------------------------------
+# ================================================================
+# 🧠 GPT Semantic Extraction
+# ================================================================
+def extract_keywords_gpt(text: str, lang: str):
+    prompt = (
+        f"請根據以下摘要內容，以{lang}萃取10個具語義代表性的學術關鍵詞，"
+        f"並用頓號（、）分隔：\n\n{text}"
+    )
+    out = call_gpt_with_retry(prompt)
+    if not out:
+        return ""
+    out = re.sub(r"[、;；\|／/，、\s]+", ", ", out)
+    return out.strip(" ,")
+
+# ================================================================
+# 🔗 Edge Builder
+# ================================================================
 def build_edges(df_kw):
     pairs = []
     for _, row in df_kw.iterrows():
-        terms = [t.strip() for t in re.split(r"[,，;；\s]+", str(row["keywords"])) if t.strip()]
+        terms = [t.strip() for t in re.split(r"[,，、;；\s]+", str(row["keywords"])) if t.strip()]
         terms = list(dict.fromkeys(terms))
         for i in range(len(terms)):
             for j in range(i + 1, len(terms)):
@@ -101,186 +114,135 @@ def build_edges(df_kw):
     e = pd.DataFrame(pairs, columns=["Source", "Target", "edge"])
     return e.groupby(["Source", "Target"], as_index=False)["edge"].sum()
 
-# ------------------------------------------------------------
-# 🧩 Louvain cluster
-# ------------------------------------------------------------
-def louvain_cluster(edges):
+# ================================================================
+# 🎨 Scatter Plot (with Theme Boxes)
+# ================================================================
+def plot_scatter(vertices, theme_labels, lang="en"):
+    font_family = "Noto Sans TC" if lang.startswith("zh") else "Segoe UI"
+    plt.rcParams["font.family"] = font_family
+
+    plt.figure(figsize=(7, 6))
+    x = vertices["edge"]
+    y = vertices["count"].rank()
+    colors = vertices["cluster"]
+    plt.scatter(x, y, s=vertices["count"] * 10, c=colors, cmap="tab10", alpha=0.8, edgecolor="k")
+
+    for i, row in vertices.iterrows():
+        plt.text(x.iloc[i] + 0.05, y.iloc[i], row["term"], fontsize=8)
+
+    xm, ym = x.mean(), y.mean()
+    plt.axvline(x=xm, color="red", linestyle="--", linewidth=1)
+    plt.axhline(y=ym, color="red", linestyle="--", linewidth=1)
+
+    for cid, theme in theme_labels.items():
+        yc = vertices.loc[vertices["cluster"] == cid, "count"].rank().mean()
+        plt.text(
+            xm * 1.2,
+            yc,
+            theme,
+            fontsize=12,
+            color="red",
+            bbox=dict(facecolor="lightcoral", alpha=0.3, boxstyle="round,pad=0.4"),
+        )
+
+    plt.xlabel("Edge Frequency" if lang.startswith("en") else "共現頻率")
+    plt.ylabel("Term Rank" if lang.startswith("en") else "詞彙重要性排名")
+    plt.title("Louvain Keyword Network" if lang.startswith("en") else "Louvain 關鍵詞網絡圖")
+    plt.grid(alpha=0.3, linestyle=":")
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", bbox_inches="tight")
+    plt.close()
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode()
+
+# ================================================================
+# 🏠 Home Route
+# ================================================================
+@app.get("/", response_class=HTMLResponse)
+def home():
+    return HTMLResponse(
+        "<h2>Welcome to TAAA Semantic Analyzer</h2><p>Upload your CSV via /analyze_csv.</p>"
+    )
+
+# ================================================================
+# 📊 Analysis Route
+# ================================================================
+@app.post("/analyze_csv")
+async def analyze_csv(file: UploadFile = File(...)):
+    fn = file.filename
+    try:
+        df = safe_read_csv(file)
+    except Exception as e:
+        return HTMLResponse(f"<h3>❌ CSV read error: {e}</h3>")
+
+    if "abstract" not in df.columns:
+        return HTMLResponse("<h3>❌ Missing 'abstract' column.</h3>")
+
+    lang = "Chinese"
+    docs = df["abstract"].astype(str).fillna("")
+    use_gpt = "gpt" in fn.lower() or os.getenv("CHATGPT_ENV") == "true"
+
+    df["keywords"] = (
+        [extract_keywords_gpt(t, lang) for t in docs]
+        if use_gpt
+        else extract_keywords_tfidf(docs)
+    )
+
+    edges = build_edges(df)
+    if edges.empty:
+        return HTMLResponse("<h3>❌ No valid co-word pairs detected.</h3>")
+
     G = nx.from_pandas_edgelist(edges, "Source", "Target", "edge")
     comms = nx.community.louvain_communities(G, seed=42)
     cmap = {n: i + 1 for i, c in enumerate(comms) for n in c}
     deg = pd.Series(dict(G.degree(weight="edge")), name="count").reset_index()
     deg.columns = ["term", "count"]
     deg["cluster"] = deg["term"].map(cmap)
-    return deg, edges
+    deg["edge"] = deg["term"].map(lambda t: edges.query("Source == @t or Target == @t")["edge"].sum())
+    vertices = deg.sort_values("count", ascending=False).head(20)
+    theme_labels = {i + 1: f"Theme {i + 1}" for i in range(len(comms))}
 
-# ------------------------------------------------------------
-# 🎨 Enhanced Scatter Plot (Top-20 Terms + Red Theme Labels)
-# ------------------------------------------------------------
-def plot_scatter(vertices, topic_labels=None, lang="en"):
-    """Top-20 term scatter with multilingual fonts & red theme boxes."""
-    plt.rcParams["font.family"] = (
-        ["Noto Sans TC", "Microsoft JhengHei", "SimHei"]
-        if lang.startswith(("zh", "ja", "ko")) else ["Segoe UI", "Arial"]
-    )
+    img64 = plot_scatter(vertices, theme_labels, lang="zh")
 
-    plt.figure(figsize=(7, 6))
-    x = vertices["count"].rank().values
-    y = vertices["edge"].values
-    clusters = vertices["cluster"].values
+    # Save output files to /tmp (Render writable)
+    out_v = f"/tmp/{os.path.splitext(fn)[0]}_vertices.csv"
+    out_r = f"/tmp/{os.path.splitext(fn)[0]}_relations.csv"
+    out_t = f"/tmp/{os.path.splitext(fn)[0]}_themed.csv"
 
-    plt.scatter(x, y, s=vertices["count"]*45, c=clusters,
-                cmap="tab10", alpha=0.9, edgecolor="k")
+    vertices.to_csv(out_v, index=False, encoding="utf-8-sig")
+    edges.to_csv(out_r, index=False, encoding="utf-8-sig")
+    df.to_csv(out_t, index=False, encoding="utf-8-sig")
 
-    plt.axvline(x.mean(), color="red", ls="--", lw=1)
-    plt.axhline(y.mean(), color="red", ls="--", lw=1)
-
-    # --- term labels ---
-    for idx, row in enumerate(vertices.itertuples()):
-        plt.text(x[idx]+0.15, y[idx], row.term, fontsize=8, color="black")
-
-    # --- red theme boxes ---
-    if topic_labels is not None and not topic_labels.empty:
-        centroids = (
-            vertices.groupby("cluster")[["count", "edge"]]
-            .mean()
-            .reset_index()
-            .merge(topic_labels, on="cluster", how="left")
-        )
-        for _, r in centroids.iterrows():
-            if pd.notna(r.get("topic_label", "")):
-                plt.text(
-                    r["count"], r["edge"] + 0.8, r["topic_label"],
-                    color="red", fontsize=11, fontweight="bold",
-                    ha="center",
-                    bbox=dict(facecolor="white", alpha=0.65,
-                              edgecolor="red", boxstyle="round,pad=0.35")
-                )
-
-    xlabel = "詞彙排名" if lang.startswith(("zh","ja","ko")) else "Term Rank"
-    ylabel = "共現頻率" if lang.startswith(("zh","ja","ko")) else "Co-occurrence Frequency"
-    title  = "關鍵詞散佈圖（含主題）" if lang.startswith(("zh","ja","ko")) else "Top-20 Terms Scatter Plot (with Themes)"
-
-    plt.xlabel(xlabel); plt.ylabel(ylabel); plt.title(title)
-    plt.grid(alpha=0.3, ls=":")
-    buf = io.BytesIO(); plt.savefig(buf, format="png", bbox_inches="tight")
-    plt.close(); buf.seek(0)
-    return base64.b64encode(buf.read()).decode()
-
-# ------------------------------------------------------------
-# 📊 h-bar Chart
-# ------------------------------------------------------------
-def plot_hbar(theme_freq, h_index, topic_labels):
-    plt.figure(figsize=(7,5))
-    merged = pd.merge(theme_freq, topic_labels, on="cluster", how="left").sort_values("freq", ascending=False)
-    plt.bar(merged["cluster"].astype(str), merged["freq"], color="skyblue", edgecolor="k")
-    plt.axhline(y=h_index, color="red", ls="--", lw=1.2)
-    for i, r in enumerate(merged.itertuples()):
-        plt.text(i, r.freq+0.5, str(r.topic_label), rotation=90, ha="center", fontsize=8)
-    plt.title(f"Top-h Core Themes (h={h_index}) – TAAA")
-    plt.xlabel("Theme (Cluster ID)"); plt.ylabel("Assigned Rows Count")
-    plt.tight_layout()
-    buf = io.BytesIO(); plt.savefig(buf, format="png", bbox_inches="tight")
-    plt.close(); buf.seek(0)
-    return base64.b64encode(buf.read()).decode()
-
-# ------------------------------------------------------------
-# 🧮 TAAA theme assignment
-# ------------------------------------------------------------
-def assign_themes(df, vertices, topic_labels):
-    mapping = dict(vertices[["term","cluster"]].values)
-    cluster_label = dict(topic_labels[["cluster","topic_label"]].values)
-    results=[]
-    for _, row in df.iterrows():
-        text=" ".join(map(str,row.values))
-        clusters=[mapping[t] for t in mapping if t in text]
-        if not clusters:
-            theme="Unassigned"
-        else:
-            mode=pd.Series(clusters).mode().iloc[0]
-            theme=cluster_label.get(mode,f"Cluster {mode}")
-        results.append(theme)
-    df_theme=df.copy()
-    df_theme.insert(0,"theme",results)
-    return df_theme
-
-# ------------------------------------------------------------
-# 🏠 Home
-# ------------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-def home():
-    return HTMLResponse(open("index.html", encoding="utf-8").read())
-
-# ------------------------------------------------------------
-# 📤 Analyze CSV
-# ------------------------------------------------------------
-@app.post("/analyze_csv")
-async def analyze_csv(file: UploadFile = File(...)):
-    try:
-        df = safe_read_csv(file)
-    except Exception as e:
-        return HTMLResponse(f"<h3>❌ CSV read error: {e}</h3>")
-
-    if df.shape[1]==1:
-        df.columns=["abstract"]
-        df["keywords"]=df["abstract"].apply(lambda x: extract_keywords(str(x)))
-    else:
-        df.columns=[c.strip() for c in df.columns]
-        df["keywords"]=df.apply(lambda r:", ".join([str(v) for v in r if pd.notna(v)]),axis=1)
-
-    edges=build_edges(df)
-    if edges.empty:
-        return HTMLResponse("<h3>❌ No co-word pairs found.</h3>")
-
-    vertices,edges=louvain_cluster(edges)
-    vertices["edge"]=vertices["term"].map(lambda t: edges.query("Source==@t or Target==@t")["edge"].sum())
-    top20=vertices.sort_values("count",ascending=False).head(20)
-
-    # --- h-core metrics ---
-    theme_freq=vertices.groupby("cluster")["term"].count().reset_index(name="freq").sort_values("freq",ascending=False)
-    theme_freq["rank"]=range(1,len(theme_freq)+1)
-    h_index=int(max(theme_freq["rank"][theme_freq["freq"]>=theme_freq["rank"]],default=0))
-    topic_labels=vertices.groupby("cluster")["term"].apply(lambda x:", ".join(x.head(2))).reset_index(name="topic_label")
-
-    # --- plots ---
-    img_scatter=plot_scatter(top20, topic_labels)
-    img_bar=plot_hbar(theme_freq,h_index,topic_labels)
-
-    # --- TAAA assignment ---
-    df_theme=assign_themes(df,vertices,topic_labels)
-
-    # --- Save outputs ---
-    tmp_v=tempfile.NamedTemporaryFile(delete=False,suffix="_vertices.csv")
-    tmp_e=tempfile.NamedTemporaryFile(delete=False,suffix="_relations.csv")
-    tmp_t=tempfile.NamedTemporaryFile(delete=False,suffix="_themed.csv")
-    vertices.to_csv(tmp_v.name,index=False,encoding="utf-8-sig")
-    edges.to_csv(tmp_e.name,index=False,encoding="utf-8-sig")
-    df_theme.to_csv(tmp_t.name,index=False,encoding="utf-8-sig")
-
-    html=f"""
-    <h2>✅ Analysis Complete</h2>
-    <h4>Scatter Plot (Top-20 Terms)</h4>
-    <img src="data:image/png;base64,{img_scatter}" style="max-width:95%;border:1px solid #ccc"/><br><br>
-    <h4>Bar Chart (Top-h Core Themes)</h4>
-    <img src="data:image/png;base64,{img_bar}" style="max-width:95%;border:1px solid #ccc"/><br><br>
-    <a href="/download?path={tmp_v.name}">📥 Vertices CSV</a><br>
-    <a href="/download?path={tmp_e.name}">📥 Relations CSV</a><br>
-    <a href="/download?path={tmp_t.name}">📥 Themed CSV (TAAA assignments)</a>
+    html = f"""
+    <h2>✅ Analysis Complete ({'GPT' if use_gpt else 'TF-IDF'} Mode)</h2>
+    <img src="data:image/png;base64,{img64}" style="max-width:95%;border:1px solid #ccc"/><br><br>
+    <a href="/download?path={out_v}">📥 Vertices CSV</a><br>
+    <a href="/download?path={out_r}">📥 Relations CSV</a><br>
+    <a href="/download?path={out_t}">📥 Themed CSV</a>
     """
     return HTMLResponse(html)
 
-# ------------------------------------------------------------
-# 📥 Download route
-# ------------------------------------------------------------
+# ================================================================
+# 📥 Download Route
+# ================================================================
 @app.get("/download")
 async def download(path: str):
     return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
 
-# ------------------------------------------------------------
-# 🚀 Local / Render run
-# ------------------------------------------------------------
+# ================================================================
+# 💓 Health Check
+# ================================================================
+@app.get("/health")
+def health():
+    return {"status": "ok", "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+
+# ================================================================
+# 🚀 Local Runner
+# ================================================================
 if __name__ == "__main__":
-    import uvicorn, locale
-    locale.setlocale(locale.LC_ALL, "")
-    port=int(os.environ.get("PORT",10000))
-    print(f"🚀 Running on http://0.0.0.0:{port}")
+    import uvicorn
+    port = int(os.environ.get("PORT", 10000))
+    print(f"🚀 Running TAAA Semantic Analyzer on port {port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
