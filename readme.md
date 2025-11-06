@@ -36,9 +36,4 @@ Built for bibliometric and semantic-trend analysis in academic datasets
 
 ### 🚀 Quick Start
 
-#### **Option 1. Run Locally**
-```bash
-git clone https://github.com/smilechien/TAAA_Semantic_Analyzer.git
-cd TAAA_Semantic_Analyzer/app
-pip install -r requirements.txt
-uvicorn main:app --reload
+ 
