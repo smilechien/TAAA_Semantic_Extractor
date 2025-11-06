@@ -1,9 +1,10 @@
 fastapi
-uvicorn
+uvicorn[standard]
 pandas
-networkx
 matplotlib
+networkx
 chardet
-langdetect
 openai>=1.0.0
+langdetect
 requests
+
