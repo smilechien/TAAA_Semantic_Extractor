@@ -33,6 +33,23 @@ Built for bibliometric and semantic-trend analysis in academic datasets
 | **Downloadable Outputs** | Vertices, relations, and full dataset (with theme) |
 
 ---
+### 🧱 Folder structure reminder
+
+Your repo should now look like:
+
+TAAA_Semantic_Extractor/
+│
+├── app/
+│   ├── main.py
+│   ├── index.html
+│   └── static/
+│       ├── abstracts_demo.csv
+│       ├── animalzoocoword.csv
+│       └── readme_dataset_info.csv
+│
+├── render.yaml
+├── requirements.txt
+└── README.md
 
 ### 🚀 Quick Start
 

@@ -1,22 +1,14 @@
-# --- Core runtime ---
+--only-binary=:all:
+pandas==2.2.2
+numpy==1.26.4
 fastapi==0.115.2
 uvicorn==0.32.0
 openai==1.45.0
 python-multipart==0.0.20
-
-# --- Data / analytics ---
-pandas==2.2.2
-numpy==1.26.4
 scikit-learn==1.5.2
 chardet==5.2.0
-
-# --- Visualization ---
 matplotlib==3.9.2
 networkx==3.3
-
-# --- Utilities ---
 requests==2.32.3
 langdetect==1.0.9
-
-# --- Fonts (Render Ubuntu compatible) ---
 fonttools==4.54.1
