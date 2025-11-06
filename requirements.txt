@@ -1,13 +1,26 @@
+# ---------- Core Framework ----------
 fastapi==0.115.2
 uvicorn==0.32.0
-openai==1.52.2
+
+# ---------- Data Handling ----------
 pandas==2.2.3
+numpy==2.3.4
+chardet==5.2.0
+scikit-learn==1.5.2
+
+# ---------- NLP & Language Detection ----------
+jieba==0.42.1
+langdetect==1.0.9
+
+# ---------- Visualization ----------
 matplotlib==3.9.2
 networkx==3.3
-scikit-learn==1.5.2
-langdetect==1.0.9
+
+# ---------- Utilities ----------
 python-multipart==0.0.20
-chardet==5.2.0
-fonttools==4.54.1
-requests==2.32.3
 tqdm==4.67.1
+
+# ---------- Optional but Helpful ----------
+requests==2.32.3
+anyio==4.11.0
+
