@@ -18,7 +18,8 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from langdetect import detect
 import openai
-from openai.error import APIError, RateLimitError, APITimeoutError
+ 
+from openai._exceptions import APIError, RateLimitError, APITimeoutError
 
 # ================================================================
 # 🚀 FastAPI App
