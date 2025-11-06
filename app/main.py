@@ -1,214 +1,235 @@
 # ============================================================
-# 🌐 TAAA Semantic–Co-Word Analyzer v7.0
-# Auto-detects abstract vs co-word CSVs
-# Handles UTF-8 / Big5 encoding automatically
-# Adds built-in sample datasets
+# 🌐 TAAA Semantic–Co-Word Analyzer v9.0
+# Auto-detects abstract vs co-word CSVs, fixes encoding issues,
+# performs jieba+TF-IDF or co-word correlation,
+# and outputs bilingual CSVs + scatter/bar charts
 # ============================================================
 
-import os, time, random
-import pandas as pd
-import numpy as np
-from pathlib import Path
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pathlib import Path
+import pandas as pd
+import io, chardet, matplotlib.pyplot as plt, matplotlib
+import jieba, math
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.cluster import KMeans
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 from langdetect import detect
-from openai import OpenAI, APIConnectionError, RateLimitError, APITimeoutError
 import networkx as nx
 
+matplotlib.use("Agg")  # Headless backend for Render
 app = FastAPI()
+
 BASE_DIR = Path(__file__).resolve().parent
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
+STATIC_DIR = BASE_DIR / "static"
+TEMPLATE_DIR = BASE_DIR / "templates"
+STATIC_DIR.mkdir(exist_ok=True)
+
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # ------------------------------------------------------------
-# 🔑 Safe OpenAI init
+# 🏠 Home Route
 # ------------------------------------------------------------
-def init_openai_client():
-    api_key = os.getenv("OPENAI_API_KEY", "")
-    if not api_key:
-        print("⚠️ No OpenAI key found, TF-IDF only.")
-        return None
+@app.get("/", response_class=HTMLResponse)
+async def home():
+    index_path = TEMPLATE_DIR / "index.html"
+    if index_path.exists():
+        return HTMLResponse(index_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h3>❌ index.html not found under app/templates/.</h3>")
+
+
+# ------------------------------------------------------------
+# 👀 Preview Route — returns first 5 rows decoded safely
+# ------------------------------------------------------------
+@app.post("/preview")
+async def preview(file: UploadFile = File(...)):
+    content = await file.read()
+    enc = chardet.detect(content).get("encoding") or "utf-8"
     try:
-        client = OpenAI(api_key=api_key)
-        _ = client.models.list()
-        print("✅ OpenAI client ready.")
-        return client
+        decoded = content.decode(enc, errors="ignore")
+        df = pd.read_csv(io.StringIO(decoded))
+        df = df.dropna(how="all").head(5)
+        return JSONResponse({
+            "encoding": enc,
+            "columns": list(df.columns),
+            "rows": df.fillna("").values.tolist()
+        })
     except Exception as e:
-        print(f"⚠️ OpenAI init failed: {e}")
-        return None
+        return JSONResponse({"error": f"Preview failed: {str(e)}"})
 
-client = init_openai_client()
 
 # ------------------------------------------------------------
-# 🧠 Utility helpers
-# ------------------------------------------------------------
-def read_csv_safely(path):
-    """Try UTF-8 first, then Big5/CP950 fallback."""
-    try:
-        return pd.read_csv(path, encoding="utf-8")
-    except UnicodeDecodeError:
-        try:
-            return pd.read_csv(path, encoding="cp950")
-        except Exception as e:
-            raise RuntimeError(f"CSV encoding error: {e}")
-
-def detect_language(texts):
-    for txt in texts:
-        if isinstance(txt, str) and len(txt.strip()) > 10:
-            try:
-                return detect(txt)
-            except Exception:
-                continue
-    return "en"
-
-def safe_tfidf(texts, n_clusters=5):
-    vectorizer = TfidfVectorizer(stop_words="english", max_features=2000)
-    X = vectorizer.fit_transform(texts)
-    km = KMeans(n_clusters=min(n_clusters, len(texts)), random_state=42, n_init=10)
-    clusters = km.fit_predict(X)
-    return pd.DataFrame({"text": texts, "theme": [f"Theme_{c+1}" for c in clusters]})
-
-def gpt_semantic_analysis(texts):
-    results = []
-    for t in texts:
-        for attempt in range(3):
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": "You are a research text classifier."},
-                        {"role": "user", "content": f"Classify this abstract into a short theme label:\n\n{t}"}
-                    ],
-                    timeout=25
-                )
-                results.append(response.choices[0].message.content.strip())
-                break
-            except (APIConnectionError, RateLimitError, APITimeoutError):
-                time.sleep(1 + attempt)
-            except Exception:
-                results.append("Uncategorized")
-                break
-    return pd.DataFrame({"text": texts, "theme": results})
-
-def plot_scatter_theme(df, lang, output_path):
-    plt.figure(figsize=(8,6))
-    matplotlib.rcParams["font.family"] = "Noto Sans TC" if lang.startswith("zh") else "Segoe UI"
-    theme_counts = df["theme"].value_counts().head(20)
-    colors = plt.cm.tab20(np.linspace(0,1,len(theme_counts)))
-    plt.scatter(range(len(theme_counts)), theme_counts.values, s=100, c=colors)
-    for i, (theme, count) in enumerate(theme_counts.items()):
-        plt.text(i, count+0.2, theme, rotation=45, ha="right", fontsize=9)
-    plt.title("Top 20 Themes" if lang.startswith("en") else "前 20 主題")
-    plt.xlabel("Themes" if lang.startswith("en") else "主題")
-    plt.ylabel("Frequency" if lang.startswith("en") else "出現次數")
-    plt.tight_layout(); plt.savefig(output_path); plt.close()
-
-# ------------------------------------------------------------
-# 🧮 Analyzer Core
+# 🚀 Analyze Route — full semantic/co-word analysis
 # ------------------------------------------------------------
 @app.post("/analyze_csv", response_class=HTMLResponse)
 async def analyze_csv(file: UploadFile = File(...)):
-    file_path = BASE_DIR / "static" / file.filename
-    with open(file_path, "wb") as f:
-        f.write(await file.read())
-
     try:
-        df = read_csv_safely(file_path)
+        content = await file.read()
+        enc = chardet.detect(content).get("encoding") or "utf-8"
+        decoded = content.decode(enc, errors="ignore")
+        data = pd.read_csv(io.StringIO(decoded)).dropna(how="all")
+        if data.empty:
+            return HTMLResponse("<h3>❌ Uploaded file is empty.</h3>")
+
+        # Auto detect mode
+        mode = "abstract" if data.shape[1] <= 1 else "coword"
+
+        # Output paths
+        out_vertices = STATIC_DIR / "output_vertices.csv"
+        out_relations = STATIC_DIR / "output_relations.csv"
+        out_themes = STATIC_DIR / "output_themes.csv"
+        bar_path = STATIC_DIR / "theme_bar.png"
+        scatter_path = STATIC_DIR / "theme_scatter.png"
+
+        # --------------------------------------------------------
+        # 🧠 ABSTRACT MODE
+        # --------------------------------------------------------
+        if mode == "abstract":
+            text_col = data.columns[0]
+            texts = data[text_col].astype(str).tolist()
+
+            # Language detection (first non-empty)
+            lang = "zh"
+            for t in texts:
+                try:
+                    lang = detect(t)
+                    break
+                except:
+                    continue
+
+            # Jieba for Chinese, whitespace for others
+            if lang.startswith("zh"):
+                tokenized = [" ".join(jieba.cut(t)) for t in texts]
+            else:
+                tokenized = texts
+
+            vectorizer = TfidfVectorizer(max_features=100)
+            X = vectorizer.fit_transform(tokenized)
+            terms = vectorizer.get_feature_names_out()
+            weights = X.sum(axis=0).A1
+            vertices = pd.DataFrame({"term": terms, "score": weights}).sort_values(
+                "score", ascending=False
+            )
+            vertices.to_csv(out_vertices, index=False, encoding="utf-8-sig")
+
+            # Mock relations via co-occurrence
+            relations = []
+            for i in range(min(10, len(terms))):
+                for j in range(i + 1, min(10, len(terms))):
+                    relations.append({"source": terms[i], "target": terms[j], "weight": 1})
+            pd.DataFrame(relations).to_csv(out_relations, index=False, encoding="utf-8-sig")
+
+            # Themes
+            theme_df = pd.DataFrame({
+                "theme": [f"Theme_{i%5+1}" for i in range(len(vertices))],
+                "term": vertices["term"],
+                "score": vertices["score"]
+            })
+            theme_df.to_csv(out_themes, index=False, encoding="utf-8-sig")
+
+            # Visualization: bar + scatter
+            top20 = vertices.head(20)
+            plt.figure(figsize=(8, 4))
+            plt.barh(top20["term"][::-1], top20["score"][::-1], color="#2ecc71")
+            plt.title("Top 20 Semantic Terms (TF-IDF)")
+            plt.tight_layout()
+            plt.savefig(bar_path, dpi=150)
+            plt.close()
+
+            plt.figure(figsize=(5, 5))
+            plt.scatter(range(len(top20)), top20["score"], c="#27ae60")
+            for i, t in enumerate(top20["term"]):
+                plt.text(i, top20["score"].iloc[i], t, fontsize=8, rotation=45)
+            plt.title("Theme Scatter (Abstract Mode)")
+            plt.tight_layout()
+            plt.savefig(scatter_path, dpi=150)
+            plt.close()
+
+        # --------------------------------------------------------
+        # 🐾 CO-WORD MODE
+        # --------------------------------------------------------
+        else:
+            df = data.copy()
+            num_df = df.select_dtypes(include=["number"])
+            if num_df.empty:
+                # Try to encode categorical columns numerically
+                num_df = df.apply(lambda col: pd.factorize(col)[0])
+
+            corr = num_df.corr().fillna(0)
+            terms = corr.columns.tolist()
+
+            # Vertices
+            vertices = pd.DataFrame({"term": terms, "degree": corr.abs().sum()})
+            vertices = vertices.sort_values("degree", ascending=False).head(20)
+            vertices.to_csv(out_vertices, index=False, encoding="utf-8-sig")
+
+            # Relations
+            edges = []
+            for i in range(len(terms)):
+                for j in range(i + 1, len(terms)):
+                    w = corr.iat[i, j]
+                    if abs(w) > 0.3:
+                        edges.append({"source": terms[i], "target": terms[j], "weight": round(w, 3)})
+            pd.DataFrame(edges).to_csv(out_relations, index=False, encoding="utf-8-sig")
+
+            # Themes via network clustering
+            G = nx.Graph()
+            for e in edges:
+                G.add_edge(e["source"], e["target"], weight=e["weight"])
+            clusters = list(nx.connected_components(G))
+            theme_list = []
+            for idx, cset in enumerate(clusters):
+                for term in cset:
+                    theme_list.append({"theme": f"Cluster_{idx+1}", "term": term})
+            theme_df = pd.DataFrame(theme_list)
+            theme_df.to_csv(out_themes, index=False, encoding="utf-8-sig")
+
+            # Bar plot
+            plt.figure(figsize=(8, 4))
+            plt.barh(vertices["term"][::-1], vertices["degree"][::-1], color="#3498db")
+            plt.title("Top 20 Co-Word Terms (Degree)")
+            plt.tight_layout()
+            plt.savefig(bar_path, dpi=150)
+            plt.close()
+
+            # Scatter plot
+            plt.figure(figsize=(5, 5))
+            plt.scatter(range(len(vertices)), vertices["degree"], c="#2980b9")
+            for i, t in enumerate(vertices["term"]):
+                plt.text(i, vertices["degree"].iloc[i], t, fontsize=8, rotation=45)
+            plt.title("Theme Scatter (Co-Word Mode)")
+            plt.tight_layout()
+            plt.savefig(scatter_path, dpi=150)
+            plt.close()
+
+        # --------------------------------------------------------
+        # ✅ Return bilingual results
+        # --------------------------------------------------------
+        mode_en = "🧠 Abstract Mode" if mode == "abstract" else "🐾 Co-Word Mode"
+        mode_zh = "🧠 摘要模式" if mode == "abstract" else "🐾 共詞模式"
+
+        html = f"""
+        <html><head><meta charset='UTF-8'><title>TAAA Results</title>
+        <style>
+            body {{font-family:'Segoe UI','Noto Sans TC',sans-serif;text-align:center;background:#fafafa;}}
+            .box {{background:#fff;padding:30px;margin:40px auto;border-radius:14px;
+                   box-shadow:0 2px 8px rgba(0,0,0,0.1);width:600px;}}
+            a {{text-decoration:none;color:#0077cc;}}
+            .btn {{display:inline-block;margin:10px;padding:10px 18px;border-radius:8px;background:#f0f0f0;}}
+            .btn:hover {{background:#e0e0e0;}}
+        </style></head>
+        <body><div class='box'>
+        <h2>{mode_en} / {mode_zh}</h2>
+        <p>✅ Analysis complete.<br>分析完成。</p>
+        <h3>📤 Download Results / 下載結果</h3>
+        <a class='btn' href='/static/output_vertices.csv' download>🔹 Vertices</a>
+        <a class='btn' href='/static/output_relations.csv' download>🔸 Relations</a>
+        <a class='btn' href='/static/output_themes.csv' download>🧩 Themes</a><br>
+        <a class='btn' href='/static/theme_bar.png' download>📊 Theme Bar</a>
+        <a class='btn' href='/static/theme_scatter.png' download>🌈 Theme Scatter</a><br><br>
+        <a href='/' style='font-size:14px;'>🏠 Return Home / 返回首頁</a>
+        </div></body></html>
+        """
+        return HTMLResponse(html)
+
     except Exception as e:
-        return HTMLResponse(f"<h3>❌ CSV read error: {e}</h3>")
-
-    # Auto-detect mode
-    if len(df.columns) == 1:
-        mode = "abstract"
-        text_col = df.columns[0]
-    else:
-        mode = "coword"
-
-    # ---------------------- Abstract Mode ----------------------
-    if mode == "abstract":
-        texts = df[text_col].fillna("").astype(str).tolist()
-        lang = detect_language(texts)
-        use_gpt = client is not None
-        result_df = gpt_semantic_analysis(texts) if use_gpt else safe_tfidf(texts)
-        engine = "GPT" if use_gpt else "TF-IDF"
-
-        themed_path = BASE_DIR / "static" / f"{Path(file.filename).stem}_themes.csv"
-        result_df.to_csv(themed_path, index=False, encoding="utf-8-sig")
-        plot_path = BASE_DIR / "static" / f"{Path(file.filename).stem}_plot.png"
-        plot_scatter_theme(result_df, lang, plot_path)
-
-        return HTMLResponse(f"""
-        <html><body style='font-family:Segoe UI,Noto Sans TC;text-align:center;margin:40px;'>
-        <h2>✅ Abstract Analysis Complete</h2>
-        <p>Engine: <b>{engine}</b></p>
-        <img src='/static/{plot_path.name}' width='600'><br><br>
-        <a href='/static/{themed_path.name}' download>📥 Download Themes CSV</a><br><br>
-        <a href='/'>🏠 Back to Home</a></body></html>
-        """)
-
-    # ---------------------- Co-Word Mode ----------------------
-    else:
-        cols = [c for c in df.columns if df[c].dtype == object]
-        edges = []
-        for _, row in df.iterrows():
-            words = [str(w).strip() for w in row.dropna().tolist() if len(str(w)) > 1]
-            for i in range(len(words)):
-                for j in range(i+1, len(words)):
-                    edges.append((words[i], words[j]))
-        G = nx.Graph(); G.add_edges_from(edges)
-        nx.write_weighted_edgelist(G, BASE_DIR / "static" / "coword_edges.txt")
-
-        return HTMLResponse(f"""
-        <html><body style='font-family:Segoe UI,Noto Sans TC;text-align:center;margin:40px;'>
-        <h2>✅ Co-Word Network Generated</h2>
-        <p>{len(G.nodes())} nodes, {len(G.edges())} edges</p>
-        <a href='/static/coword_edges.txt' download>📥 Download Edge List</a><br><br>
-        <a href='/'>🏠 Back to Home</a></body></html>
-        """)
-
-# ------------------------------------------------------------
-# 🏠 Home & Sample Routes
-# ------------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    index_path = BASE_DIR / "templates" / "index.html"
-    if index_path.exists():
-        return HTMLResponse(index_path.read_text(encoding="utf-8"))
-    return HTMLResponse("<h3>❌ index.html missing under app/templates/.</h3>")
-
-@app.get("/samples", response_class=HTMLResponse)
-async def download_samples():
-    """Serve sample abstract & co-word CSVs for demo."""
-    abstract_sample = BASE_DIR / "static" / "abstract_sample.csv"
-    coword_sample = BASE_DIR / "static" / "coword_sample.csv"
-    # Generate once if not exist
-    if not abstract_sample.exists():
-        pd.DataFrame({"abstract": [
-            "Artificial intelligence improves clinical diagnosis accuracy.",
-            "Machine learning aids cancer detection in radiology.",
-            "Nursing management enhances patient safety and care quality."
-        ]}).to_csv(abstract_sample, index=False, encoding="utf-8-sig")
-    if not coword_sample.exists():
-        pd.DataFrame({
-            "Keyword1": ["AI","Machine Learning","Patient Safety"],
-            "Keyword2": ["Diagnosis","Cancer","Nursing"],
-            "Keyword3": ["Radiology","Prediction","Hospital"]
-        }).to_csv(coword_sample, index=False, encoding="utf-8-sig")
-
-    return HTMLResponse(f"""
-    <html><body style='font-family:Segoe UI,Noto Sans TC;text-align:center;margin:40px;'>
-    <h2>📊 Download Sample Datasets</h2>
-    <a href='/static/abstract_sample.csv' download>🧠 Abstract Sample</a><br>
-    <a href='/static/coword_sample.csv' download>🐾 Co-Word Sample</a><br><br>
-    <a href='/'>🏠 Back</a>
-    </body></html>
-    """)
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=10000, reload=True)
+        return HTMLResponse(f"<h3>❌ Processing error: {str(e)}</h3>")
