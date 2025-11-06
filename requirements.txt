@@ -7,4 +7,5 @@ chardet
 openai>=1.0.0
 langdetect
 requests
+python-multipart   ← ✅ add this line
 
