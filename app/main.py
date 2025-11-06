@@ -1,142 +1,86 @@
 # ================================================================
-# 🌐 TAAA Semantic–Co-Word Analyzer (v2.9, Robust Chinese CSV Reader)
+# 🌐 TAAA Semantic–Co-Word Analyzer (v3.0)
 # Author: Smile
 # Description:
-#   • Mode 1 → Abstract / DOI column (GPT/DOI extraction)
-#   • Mode 2 → Multi-column co-word terms
-#   • Full encoding detection (UTF-8-SIG / Big5 / CP950)
+#   • Reads Chinese/English CSVs (Big5 / CP950 / UTF-8-SIG)
+#   • GPT-4o-mini keyword extraction
+#   • Louvain clustering with mean-reference scatter plot
 # ================================================================
 
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 import pandas as pd
-import networkx as nx
 import matplotlib.pyplot as plt
-import tempfile, io, base64, os, re, requests, chardet
-from langdetect import detect
+import networkx as nx
+import tempfile, io, os, re, chardet
 from openai import OpenAI
 
+# ------------------------------------------------
+# 🔧 Initialize
+# ------------------------------------------------
 app = FastAPI(
     title="TAAA Semantic–Co-Word Analyzer",
-    description="Multilingual Louvain clustering with robust CSV decoding",
-    version="2.9.0"
+    description="Multilingual keyword extraction + network clustering",
+    version="3.0.0"
 )
-
-# ------------------------- GPT setup ----------------------------
-def get_client():
-    key = os.getenv("OPENAI_API_KEY")
-    if not key:
-        raise RuntimeError("❌ OPENAI_API_KEY not set in environment")
-    # Remove proxy interference (Render safe)
-    for var in ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]:
-        os.environ.pop(var, None)
-    return OpenAI(api_key=key)
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
-# ------------------------- Safe CSV Reader ----------------------
+# ------------------------------------------------
+# 🧩 Safe CSV Reader (Chinese compatible)
+# ------------------------------------------------
 def safe_read_csv(uploaded: UploadFile) -> pd.DataFrame:
-    """Safely read CSV with auto-detection + Chinese encoding fallback."""
-    raw = uploaded.file.read()              # read bytes once
-    uploaded.file.seek(0)                   # reset pointer
+    """Detect and read CSV with multiple encoding fallbacks."""
+    raw = uploaded.file.read()
+    uploaded.file.seek(0)
     guess = chardet.detect(raw).get("encoding") or "utf-8"
-
-    # Prioritize common East-Asian encodings
     encodings = [guess, "utf-8-sig", "utf-8", "big5", "cp950", "latin1"]
 
     for enc in encodings:
         try:
             df = pd.read_csv(io.BytesIO(raw), sep=None, engine="python", encoding=enc)
             if not df.empty:
-                print(f"✅ CSV decoded successfully using: {enc}")
+                print(f"✅ Decoded using {enc}")
                 return df
         except Exception as e:
-            print(f"⚠️ Failed decoding with {enc}: {e}")
+            print(f"⚠️ Failed with {enc}: {e}")
             continue
-
-    raise UnicodeDecodeError(
-        "utf-8", raw, 0, 1, "All encoding attempts failed. Try saving file as UTF-8-SIG."
-    )
+    raise UnicodeDecodeError("utf-8", raw, 0, 1, "All encodings failed.")
 
 
-# ------------------------- Helpers -------------------------------
-def is_text_column(series: pd.Series) -> bool:
-    """Return True if column likely contains text."""
-    sample = series.dropna().astype(str).head(10)
-    if sample.empty:
-        return False
-    numeric_ratio = sum(s.replace('.', '', 1).isdigit() for s in sample) / len(sample)
-    return numeric_ratio < 0.5
-
-
-def detect_language(text):
-    try:
-        code = detect(text)
-    except Exception:
-        code = "unknown"
-    mapping = {
-        "zh": "Chinese", "en": "English", "ja": "Japanese",
-        "ko": "Korean", "fr": "French", "es": "Spanish"
-    }
-    return mapping.get(code[:2], code)
-
-
-def split_terms(t):
-    return [x.strip() for x in re.split(r"[;,、，\t ]+", str(t)) if x.strip()]
-
-
-def fetch_abstract_from_doi(doi):
-    """Try to fetch abstract using CrossRef or OpenAlex."""
-    for u in [
-        f"https://api.crossref.org/works/{doi}",
-        f"https://api.openalex.org/works/doi:{doi}"
-    ]:
-        try:
-            r = requests.get(u, timeout=8)
-            if r.status_code == 200:
-                j = r.json()
-                abs_ = (
-                    j.get("message", {}).get("abstract")
-                    or j.get("abstract", {}).get("value")
-                )
-                if abs_:
-                    return re.sub(r"<[^>]+>", "", abs_)
-        except Exception:
-            continue
-    return ""
-
-
-# ------------------------- GPT Extractor -------------------------
-def extract_terms_gpt(filename, text, lang):
-    """Extract 10 key semantic terms (fallback = regex if no GPT trigger)."""
-    if not text.strip():
+# ------------------------------------------------
+# 🧠 Keyword Extraction
+# ------------------------------------------------
+def extract_keywords(text: str) -> str:
+    if not text or pd.isna(text):
         return ""
-    # Only use GPT when file name contains 'smilechien' to save tokens
-    if "smilechien" not in filename.lower():
-        words = re.findall(r"[A-Za-z\u4e00-\u9fff\-]+", text)
-        return ", ".join(sorted(set(words))[:10])
-
-    prompt = f"Extract 10 key semantic terms in {lang}, comma-separated:\n{text[:1500]}"
+    prompt = (
+        "請根據以下摘要內容，萃取 10 個具語義代表性的學術關鍵詞，"
+        "可為繁體中文或英文（依原文語言自動判斷），並用頓號（、）分隔。\n\n"
+        f"{text}"
+    )
     try:
-        c = get_client()
-        r = c.chat.completions.create(
+        r = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=0.2,
         )
-        return r.choices[0].message.content.strip()
+        kw = r.choices[0].message.content.strip()
+        kw = re.sub(r"[、;；\|／/，、\s]+", ", ", kw)
+        kw = re.sub(r",\s*,+", ", ", kw)
+        return kw.strip(" ,")
     except Exception as e:
         return f"Error: {e}"
 
 
-# ------------------------- Edge Builder --------------------------
-def build_edges(df):
-    """Construct Source–Target pairs for all co-occurring terms."""
+# ------------------------------------------------
+# 🔗 Edge Builder
+# ------------------------------------------------
+def build_edges(df_kw):
     pairs = []
-    for _, row in df.iterrows():
-        terms = [str(t).strip() for t in row if str(t).strip() not in ["", "nan", "None"]]
-        terms = list(dict.fromkeys(terms))  # deduplicate
-        if len(terms) < 2:
-            continue
+    for _, row in df_kw.iterrows():
+        terms = [t.strip() for t in re.split(r"[,，、;；\s]+", str(row["keywords"])) if t.strip()]
+        terms = list(dict.fromkeys(terms))
         for i in range(len(terms)):
             for j in range(i + 1, len(terms)):
                 pairs.append((terms[i], terms[j], 1))
@@ -146,124 +90,109 @@ def build_edges(df):
     return e.groupby(["Source", "Target"], as_index=False)["edge"].sum()
 
 
-# ------------------------- Louvain Cluster -----------------------
-def louvain_cluster(edges):
-    G = nx.from_pandas_edgelist(edges, "Source", "Target", "edge")
-    comms = nx.community.louvain_communities(G, seed=42)
-    cmap = {n: i + 1 for i, c in enumerate(comms) for n in c}
-    deg = pd.Series(dict(G.degree(weight="edge")), name="count").reset_index()
-    deg.columns = ["term", "count"]
-    deg["cluster"] = deg["term"].map(cmap)
-    top20 = deg.sort_values("count", ascending=False).head(20)
-    rels = edges.query("Source in @top20.term and Target in @top20.term")
-    return top20, rels
-
-
-# ------------------------- Plot Network --------------------------
-def plot_network(vertices, rels):
+# ------------------------------------------------
+# 🎨 Network Plot (with x/y axes & mean lines)
+# ------------------------------------------------
+def plot_network(vertices):
     plt.figure(figsize=(7, 6))
-    G = nx.from_pandas_edgelist(rels, "Source", "Target", "edge")
-    pos = nx.spring_layout(G, seed=42)
-    nx.draw_networkx_edges(G, pos, alpha=0.3)
-    nx.draw_networkx_nodes(
-        G, pos,
-        node_size=[vertices.set_index("term").loc[n, "count"] * 50 for n in G.nodes()],
-        node_color=[vertices.set_index("term").loc[n, "cluster"] for n in G.nodes()],
-        cmap="tab10", alpha=0.9
-    )
-    nx.draw_networkx_labels(G, pos, font_size=8)
-    plt.title("Top-20 Louvain Network (Categorical Relations)", fontsize=12)
-    plt.axis("off")
+    # 2-D scatter layout for visual reference
+    x = vertices["count"].rank().values
+    y = vertices["cluster"]
+    plt.scatter(x, y, s=vertices["count"] * 8, c=vertices["cluster"], cmap="tab10", alpha=0.8)
+
+    # Mean reference lines
+    xm, ym = x.mean(), y.mean()
+    plt.axvline(x=xm, color="red", linestyle="--", linewidth=1)
+    plt.axhline(y=ym, color="red", linestyle="--", linewidth=1)
+
+    # Labels
+    for i, row in vertices.iterrows():
+        plt.text(x[i] + 0.1, y[i], row["term"], fontsize=8)
+
+    plt.xlabel("Term Rank (Count order)")
+    plt.ylabel("Cluster ID")
+    plt.title("Louvain Keyword Network (Mean Reference Lines in Red)")
+    plt.grid(alpha=0.3, linestyle=":")
     buf = io.BytesIO()
+    plt.tight_layout()
     plt.savefig(buf, format="png", bbox_inches="tight")
     plt.close()
     buf.seek(0)
     return base64.b64encode(buf.read()).decode()
 
 
-# ------------------------- Routes --------------------------------
+# ------------------------------------------------
+# 🏠 Home Route
+# ------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 def home():
-    return HTMLResponse(open("index.html", "r", encoding="utf-8").read())
+    try:
+        html = open("index.html", "r", encoding="utf-8").read()
+        return HTMLResponse(content=html)
+    except Exception as e:
+        return HTMLResponse(f"<h3>Error loading page:</h3><p>{e}</p>")
 
 
+# ------------------------------------------------
+# 📤 CSV Upload Route
+# ------------------------------------------------
 @app.post("/analyze_csv")
 async def analyze_csv(file: UploadFile = File(...)):
-    fn = file.filename
     try:
         df = safe_read_csv(file)
     except Exception as e:
         return HTMLResponse(f"<h3>❌ CSV read error: {e}</h3>")
 
-    df = df.dropna(how="all")
-    if df.empty:
-        return HTMLResponse("<h3>❌ Your file has no usable rows.</h3>")
+    if "abstract" not in df.columns:
+        return HTMLResponse("<h3>❌ Missing 'abstract' column in CSV.</h3>")
 
-    # keep only mostly text columns
-    text_cols = [c for c in df.columns if is_text_column(df[c])]
-    df = df[text_cols]
-    if df.empty:
-        return HTMLResponse("<h3>❌ No text-like columns detected (numeric-only file).</h3>")
-
-    mode = "mode1" if df.shape[1] == 1 else "mode2"
-
-    # ---------- Mode 1 ----------
-    if mode == "mode1":
-        all_terms = []
-        for _, r in df.iterrows():
-            text = str(r.iloc[0]).strip()
-            if not text:
-                continue
-            if re.match(r"^10\.\d{4,9}/", text):
-                text = fetch_abstract_from_doi(text)
-            lang = detect_language(text)
-            terms = extract_terms_gpt(fn, text, lang)
-            all_terms.append(split_terms(terms))
-        df_terms = pd.DataFrame(all_terms)
-        edges = build_edges(df_terms)
-
-    # ---------- Mode 2 ----------
-    else:
-        lang = detect_language(" ".join(df.columns))
-        edges = build_edges(df)
+    # Extract keywords
+    df["keywords"] = df["abstract"].apply(lambda x: extract_keywords(str(x)))
+    edges = build_edges(df)
 
     if edges.empty:
-        preview_html = df.head().to_html(index=False)
-        return HTMLResponse(
-            f"<h3>❌ No valid term pairs found.</h3>"
-            f"<p>👉 Ensure each row has ≥2 non-empty text terms.</p>"
-            f"<h4>File preview:</h4>{preview_html}"
-        )
+        return HTMLResponse("<h3>❌ No valid co-word pairs detected.</h3>")
 
-    vertices, rels = louvain_cluster(edges)
-    if vertices.empty:
-        return HTMLResponse("<h3>❌ No cluster detected.</h3>")
+    # Build Louvain clusters
+    G = nx.from_pandas_edgelist(edges, "Source", "Target", "edge")
+    comms = nx.community.louvain_communities(G, seed=42)
+    cmap = {n: i + 1 for i, c in enumerate(comms) for n in c}
+    deg = pd.Series(dict(G.degree(weight="edge")), name="count").reset_index()
+    deg.columns = ["term", "count"]
+    deg["cluster"] = deg["term"].map(cmap)
+    vertices = deg.sort_values("count", ascending=False).head(30)
 
-    img64 = plot_network(vertices, rels)
+    # Plot network
+    import base64
+    img64 = plot_network(vertices)
+
     tmp_v = tempfile.NamedTemporaryFile(delete=False, suffix="_vertices.csv")
     tmp_r = tempfile.NamedTemporaryFile(delete=False, suffix="_relations.csv")
     vertices.to_csv(tmp_v.name, index=False, encoding="utf-8-sig")
-    rels.to_csv(tmp_r.name, index=False, encoding="utf-8-sig")
+    edges.to_csv(tmp_r.name, index=False, encoding="utf-8-sig")
 
     html = f"""
-    <h2>✅ Analysis Complete ({mode})</h2>
-    <p>Detected language: <b>{lang}</b></p>
-    <p>Kept text columns: <b>{', '.join(text_cols)}</b></p>
+    <h2>✅ Analysis Complete</h2>
     <img src="data:image/png;base64,{img64}" style="max-width:95%;border:1px solid #ccc"/><br><br>
     <a href="/download?path={tmp_v.name}">📥 Vertices CSV</a><br>
     <a href="/download?path={tmp_r.name}">📥 Relations CSV</a>
     """
-    return HTMLResponse(content=html)
+    return HTMLResponse(html)
 
 
+# ------------------------------------------------
+# 📥 Download Route
+# ------------------------------------------------
 @app.get("/download")
 async def download(path: str):
     return FileResponse(path, media_type="text/csv", filename=os.path.basename(path))
 
 
-# ------------------------- Run locally ---------------------------
+# ------------------------------------------------
+# 🚀 Local Dev Entry Point
+# ------------------------------------------------
 if __name__ == "__main__":
-    import uvicorn
+    import uvicorn, base64
     port = int(os.environ.get("PORT", 10000))
     print(f"🚀 Running on http://0.0.0.0:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
