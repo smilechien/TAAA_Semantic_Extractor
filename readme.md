@@ -38,19 +38,27 @@ Built for bibliometric and semantic-trend analysis in academic datasets
 Your repo should now look like:
 
 TAAA_Semantic_Extractor/
-│
+TAAA_Semantic_Extractor/
 ├── app/
-│   ├── main.py
-│   ├── index.html
-│   └── static/
-│       ├── abstracts_demo.csv
-│       ├── animalzoocoword.csv
-│       └── readme_dataset_info.csv
-│
-├── render.yaml
+│   ├── main.py                 ✅ (this file)
+│   ├── static/                 ✅ (for CSV & image outputs)
+│   └── templates/              ✅ (for HTML)
+│       └── index.html
 ├── requirements.txt
+├── render.yaml
 └── README.md
 
+
+###✅ Summary of what this version does
+Feature	Description
+HTML Frontend	Serves app/templates/index.html cleanly
+Multilingual engine	Auto-detects language (English/中文/etc.)
+Engine fallback	Uses GPT if available, otherwise TF-IDF
+Modes	abstract (semantic extraction) or coword (co-occurrence)
+Outputs	2 downloadable CSVs (_vertices, _relations)
+Plots	Scatter plot with red reference lines
+Health Check	/health endpoint returns status JSON
+Render ready	Works with Python 3.12–3.13 on Render
 ### 🚀 Quick Start
 
  
