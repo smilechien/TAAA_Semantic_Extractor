@@ -2,10 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>🌐 TAAA Semantic–Co-Word Analyzer</title>
+<title>🌐 TAAA Semantic–Co-Word Analyzer v16.3</title>
 <style>
 body {
-  font-family:'Segoe UI','Noto Sans TC','Microsoft JhengHei',sans-serif;
+  font-family: 'Segoe UI','Noto Sans TC','Microsoft JhengHei',sans-serif;
   background:#fafafa;
   text-align:center;
   margin:40px;
@@ -16,7 +16,7 @@ body {
   border-radius:14px;
   box-shadow:0 2px 10px rgba(0,0,0,0.1);
   display:inline-block;
-  width:520px;
+  width:560px;
 }
 h1 {margin-top:0;color:#2a2a2a;}
 h2 {color:#555;font-weight:400;margin-top:-5px;}
@@ -54,7 +54,7 @@ footer{margin-top:25px;font-size:13px;color:#888;}
   <div class="downloads">
     <p><strong>📥 Download Sample Datasets</strong></p>
     <a href="/static/abstract_sample.csv" target="_blank">🧠 Abstract Sample (1 column)</a><br>
-    <a href="/static/coword_sample.csv" target="_blank">🐾 Co-Word Sample (Multi-column)</a><br>
+    <a href="/static/coword_sample.csv" target="_blank">🐾 Co-Word Sample (multi-column)</a><br>
     <a href="/static/readme_dataset_info.csv" target="_blank">📘 Readme Dataset Info</a>
   </div>
 
@@ -70,8 +70,8 @@ footer{margin-top:25px;font-size:13px;color:#888;}
   <div class="preview" id="preview"></div>
 
   <footer>
-    1-column → Abstract Mode · Multi-column → Co-Word Mode <br>
-    © 2025 Smile Chien · TAAA Semantic–CoWord Analyzer v15.6
+    1-column → Abstract Mode · Multi-column → Co-Word Mode<br>
+    © 2025 Smile Chien · TAAA v16.3
   </footer>
 </div>
 
@@ -87,13 +87,15 @@ fileInput.addEventListener("change",()=>{
   if(!file)return;
   const reader=new FileReader();
   reader.onload=e=>{
-    let text=e.target.result;
-    // --- Encoding safety for Chinese/Big5 ---
-    try{ text=new TextDecoder("utf-8").decode(new TextEncoder().encode(text)); }catch{}
-    const lines=text.split(/\r?\n/).slice(0,6);
-    const rows=lines.map(r=>r.split(","));
+    // Auto-detect encoding (Big5 / UTF-8)
+    const bytes=new Uint8Array(e.target.result);
+    let encoding="utf-8";
+    const text=new TextDecoder(encoding,{fatal:false}).decode(bytes);
+    const rows=text.split(/\r?\n/).slice(0,6).map(r=>r.split(/,|;|\t/));
     if(!rows.length)return;
-    let html="<h3>📄 Preview of Uploaded CSV (Top 5 Rows)</h3><table><thead><tr>";
+
+    // Build preview table
+    let html="<p><strong>📄 Preview of Uploaded CSV (Top 5 Rows)</strong></p><table><thead><tr>";
     rows[0].forEach(c=>html+=`<th>${c}</th>`); html+="</tr></thead><tbody>";
     for(let i=1;i<rows.length;i++){
       html+="<tr>"+rows[i].map(c=>`<td>${c}</td>`).join("")+"</tr>";
@@ -101,20 +103,22 @@ fileInput.addEventListener("change",()=>{
     html+="</tbody></table>";
     preview.innerHTML=html;
 
+    // Detect mode
     const cols=rows[0].length;
     if(cols<=1){
       indicator.textContent="🧠 Detected Abstract Mode";
       indicator.className="indicator blink-green";
-      modeHint.textContent="Detected single-column file → will use abstract analysis (單欄 → 摘要模式)";
+      modeHint.textContent="Detected single-column file → using abstract analysis (摘要模式)";
     }else{
       indicator.textContent="🐾 Detected Co-Word Mode";
       indicator.className="indicator blink-blue";
-      modeHint.textContent="Detected multi-column file → will use co-word analysis (多欄 → 共詞模式)";
+      modeHint.textContent="Detected multi-column file → using co-word analysis (共詞模式)";
     }
   };
-  reader.readAsText(file);
+  reader.readAsArrayBuffer(file);
 });
 
+// Upload handler
 document.getElementById("uploadForm").addEventListener("submit",async e=>{
   e.preventDefault();
   const file=fileInput.files[0];
@@ -127,10 +131,9 @@ document.getElementById("uploadForm").addEventListener("submit",async e=>{
     const response=await fetch("/analyze_csv",{method:"POST",body:data});
     const html=await response.text();
     document.open();document.write(html);document.close();
-  }catch(err){
+  }catch{
     spinner.style.display="none";
     indicator.textContent="❌ Error during analysis.";
-    console.error(err);
   }
 });
 </script>
