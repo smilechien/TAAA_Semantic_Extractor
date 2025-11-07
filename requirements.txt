@@ -1,12 +1,22 @@
-fastapi==0.115.2
-uvicorn==0.32.0
-openai==1.52.2
+# === Web Framework ===
+fastapi==0.115.0
+uvicorn==0.30.6
+
+# === Data Processing ===
 pandas==2.2.3
-numpy==2.3.4
+numpy==1.26.4
+
+# === Plotting & Visualization ===
 matplotlib==3.9.2
+plotly==5.24.0
+
+# === Graph & Community Detection ===
 networkx==3.3
-scikit-learn==1.5.2
+python-louvain==0.16
+
+# === Encoding Detection ===
 chardet==5.2.0
-python-multipart==0.0.20
-requests==2.32.3
-plotly==5.24.1
+
+# === Miscellaneous Utilities ===
+pydantic==2.9.1
+
