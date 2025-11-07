@@ -1,5 +1,8 @@
-from fastapi import FastAPI, UploadFile
-from fastapi.responses import HTMLResponse
+# =============================================================
+# 🌐 TAAA Semantic–Co-Word Analyzer (main.py v15.6)
+# =============================================================
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 import pandas as pd
@@ -8,202 +11,239 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import plotly.express as px
-import community  # python-louvain
-import chardet, io, traceback
+import plotly.graph_objects as go
+import os, io, chardet
+from community import community_louvain
 
-# === Font setup for Chinese labels ===
-plt.rcParams["font.sans-serif"] = [
-    "Noto Sans TC", "Microsoft JhengHei", "PingFang TC",
-    "WenQuanYi Micro Hei", "SimHei"
-]
+# -------------------------------------------------------------
+# ⚙️ Basic setup
+# -------------------------------------------------------------
+app = FastAPI(title="TAAA Semantic–CoWord Analyzer v15.6")
+app.mount("/static", StaticFiles(directory="static"), name="static")
+os.makedirs("static", exist_ok=True)
+
+# Chinese-safe font setup
+plt.rcParams["font.sans-serif"] = ["Microsoft JhengHei", "SimHei", "Noto Sans CJK TC", "Arial Unicode MS"]
 plt.rcParams["axes.unicode_minus"] = False
 
-# === FastAPI app setup ===
-app = FastAPI()
-BASE_DIR = Path(__file__).resolve().parent
-STATIC_DIR = BASE_DIR / "static"
-RESULTS_DIR = STATIC_DIR
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# === Helper: robust CSV reader ===
-def smart_read_csv(file: UploadFile) -> pd.DataFrame:
-    raw = file.file.read()
-    guess = chardet.detect(raw)
-    enc = guess["encoding"] or "utf-8"
-    try:
-        text = raw.decode(enc, errors="ignore")
-    except Exception:
-        text = raw.decode("utf-8", errors="ignore")
-    df = pd.read_csv(io.StringIO(text))
-    df = df.applymap(lambda x: str(x).strip() if isinstance(x, str) else x)
-    return df.fillna("")
+# -------------------------------------------------------------
+# 🧩 Helper: robust CSV reader (UTF-8 / Big5 fallback)
+# -------------------------------------------------------------
+def read_csv_safely(upload: UploadFile) -> pd.DataFrame:
+    raw = upload.file.read()
+    enc_guess = chardet.detect(raw).get("encoding", "utf-8")
+    for enc in [enc_guess, "utf-8-sig", "big5", "cp950"]:
+        try:
+            df = pd.read_csv(io.BytesIO(raw), encoding=enc)
+            upload.file.close()
+            return df.fillna("")
+        except Exception:
+            continue
+    upload.file.close()
+    return pd.DataFrame()
 
-# === Route: home page ===
+
+# -------------------------------------------------------------
+# 🧮 Main analysis route
+# -------------------------------------------------------------
+@app.post("/analyze_csv", response_class=HTMLResponse)
+async def analyze_csv(file: UploadFile = File(...)):
+    df = read_csv_safely(file)
+    if df.empty:
+        return HTMLResponse("<h3>❌ Unable to read CSV file.</h3>")
+
+    # --- Treat any DOI-like strings safely ---
+    def safe_str(x):
+        x = str(x).strip()
+        if "/" in x and not x.startswith("http"):
+            return f"DOI:{x}"  # prefix to avoid type confusion
+        return x
+
+    df = df.applymap(safe_str)
+    mode = "abstract" if df.shape[1] == 1 else "coword"
+    preview_html = df.head(5).to_html(index=False, escape=False)
+
+    # ---------------------------------------------------------
+    # 🔗 Generate pairwise relations
+    # ---------------------------------------------------------
+    rel = []
+    if mode == "abstract":
+        for _, row in df.iterrows():
+            terms = [t.strip() for t in str(row[0]).split(",") if t.strip()]
+            for i in range(len(terms)):
+                for j in range(i + 1, len(terms)):
+                    rel.append((terms[i], terms[j]))
+    else:
+        for _, row in df.iterrows():
+            terms = [str(v).strip() for v in row if str(v).strip()]
+            for i in range(len(terms)):
+                for j in range(i + 1, len(terms)):
+                    rel.append((terms[i], terms[j]))
+
+    rel = pd.DataFrame(rel, columns=["source", "target"])
+    rel["weight"] = 1
+    rel = rel.groupby(["source", "target"], as_index=False).size().rename(columns={"size": "weight"})
+    rel.to_csv("static/relations.csv", index=False, encoding="utf-8-sig")
+
+    vertices = pd.DataFrame(
+        pd.concat([rel["source"], rel["target"]]).unique(), columns=["name"]
+    )
+
+    # Safe numeric conversion — ensures later sorting won't fail
+    for col in vertices.columns:
+        if col not in ["name"]:
+            vertices[col] = pd.to_numeric(vertices[col], errors="coerce").fillna(0)
+
+    # Add placeholder value2 for sorting
+    if "value2" not in vertices.columns:
+        vertices["value2"] = 0
+
+    vertices.to_csv("static/vertices.csv", index=False, encoding="utf-8-sig")
+
+    # ---------------------------------------------------------
+    # 🕸️ Build network and Louvain clusters
+    # ---------------------------------------------------------
+    G = nx.from_pandas_edgelist(rel, "source", "target", ["weight"])
+    partition = community_louvain.best_partition(G, weight="weight")
+    cluster_df = pd.DataFrame({"term": list(partition.keys()), "cluster": list(partition.values())})
+
+    # --- Full cluster summary ---
+    cluster_summary = cluster_df.groupby("cluster").size().reset_index(name="member_count")
+    centrality = nx.degree_centrality(G)
+    leaders, members_all = [], []
+    for cid in cluster_summary["cluster"]:
+        members = cluster_df.loc[cluster_df["cluster"] == cid, "term"].tolist()
+        leader = max(members, key=lambda t: centrality.get(t, 0))
+        leaders.append(leader)
+        members_all.append(", ".join(members))
+
+    cluster_summary["cluster_label"] = leaders
+    cluster_summary["semantic_label"] = leaders
+    cluster_summary["member_terms"] = members_all
+    cluster_summary["carac"] = cluster_summary["cluster"]
+    cluster_summary.to_csv("static/cluster_theme_full.csv", index=False, encoding="utf-8-sig")
+
+    # ---------------------------------------------------------
+    # 🧠 Article–Theme assignment (TAAA)
+    # ---------------------------------------------------------
+    article_theme_records = []
+    for i, row in enumerate(df.itertuples(index=False), 1):
+        terms = [v for v in row if str(v).strip()]
+        clusters = cluster_df.loc[cluster_df["term"].isin(terms), "cluster"].tolist()
+        theme = min(pd.Series(clusters).mode().values) if clusters else -1
+        article_theme_records.append({"article_id": i, "theme": theme})
+    pd.DataFrame(article_theme_records).to_csv("static/article_theme_assign.csv", index=False, encoding="utf-8-sig")
+
+    # ---------------------------------------------------------
+    # 📊 H-Theme bar chart (semantic labels instead of cluster numbers)
+    # ---------------------------------------------------------
+    theme_counts = (
+        cluster_summary[["semantic_label", "member_count"]]
+        .sort_values("member_count", ascending=False)
+        .reset_index(drop=True)
+    )
+    H = sum(theme_counts["member_count"] >= (theme_counts.index + 1))
+
+    plt.figure(figsize=(8, 6))
+    bars = plt.barh(theme_counts["semantic_label"], theme_counts["member_count"], color="steelblue")
+    plt.xlabel("Member Count")
+    plt.ylabel("Theme (Semantic Label)")
+    plt.title(f"H-Theme Distribution by Semantic Label (H = {H})", fontsize=12, fontweight="bold")
+    plt.gca().invert_yaxis()
+    for bar in bars:
+        width = bar.get_width()
+        plt.text(width + 0.2, bar.get_y() + bar.get_height() / 2, f"{int(width)}", va="center", fontsize=9)
+    plt.tight_layout()
+    plt.savefig("static/theme_bar.png", bbox_inches="tight")
+    plt.close()
+
+    # ---------------------------------------------------------
+    # 🎨 Theme scatter (Top 20 categorical cluster colors)
+    # ---------------------------------------------------------
+    top20 = cluster_df.groupby("cluster").head(20)
+    unique_clusters = sorted(top20["cluster"].unique())
+    color_map = {cid: col for cid, col in zip(unique_clusters, px.colors.qualitative.Plotly[:len(unique_clusters)])}
+
+    fig = go.Figure()
+    for cid in unique_clusters:
+        subset = top20[top20["cluster"] == cid]
+        fig.add_trace(go.Scatter(
+            x=list(range(len(subset))),
+            y=[cid]*len(subset),
+            mode="markers+text",
+            name=f"Cluster {cid}",
+            text=subset["term"],
+            textposition="top center",
+            marker=dict(size=10, color=color_map[cid]),
+        ))
+
+    fig.update_layout(
+        title="Theme Scatter (Top 20 Terms per Cluster)",
+        xaxis_title="Index",
+        yaxis_title="Cluster (Categorical)",
+        legend_title="Clusters",
+        showlegend=True,
+        height=600
+    )
+    fig.write_html("static/theme_scatter.html")
+
+    # ---------------------------------------------------------
+    # ✅ Result Page
+    # ---------------------------------------------------------
+    links_html = """
+    <h2>✅ Analysis Complete</h2>
+    <div class='downloads'>
+      <p><strong>📁 Download Results</strong></p>
+      <a href='/static/cluster_theme_full.csv' target='_blank'>📘 Full Theme Table (CSV)</a><br>
+      <a href='/static/article_theme_assign.csv' target='_blank'>🧩 Article–Theme Assignment (CSV)</a><br>
+      <a href='/static/theme_bar.png' target='_blank'>📊 H-Theme Bar (PNG)</a><br>
+      <a href='/static/theme_scatter.html' target='_blank'>🎨 Theme Scatter (Interactive)</a><br>
+      <a href='/static/relations.csv' target='_blank'>🔗 Relation Edges (CSV)</a><br>
+      <a href='/static/vertices.csv' target='_blank'>🧱 Vertices (CSV)</a><br>
+    </div>
+    """
+
+    html = f"""
+    <html><head><meta charset='utf-8'>
+    <title>TAAA Semantic–CoWord Analyzer</title>
+    <style>
+    body {{font-family:'Segoe UI','Noto Sans TC',sans-serif;background:#fafafa;margin:40px;}}
+    .container{{background:#fff;padding:30px;border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,0.1);}}
+    table{{border-collapse:collapse;width:100%;font-size:13px;}}
+    th,td{{border:1px solid #ccc;padding:4px;}}
+    </style></head>
+    <body><div class='container'>
+    <h1>🌐 TAAA Semantic–Co-Word Analyzer</h1>
+    <h2>Results Summary</h2>
+    <h3>📄 Preview of Uploaded CSV (Top 5 Rows)</h3>
+    {preview_html}
+    {links_html}
+    </div></body></html>
+    """
+    return HTMLResponse(content=html)
+
+
+# -------------------------------------------------------------
+# 📂 Serve static files explicitly
+# -------------------------------------------------------------
+@app.get("/static/{filename}", response_class=FileResponse)
+async def serve_static_file(filename: str):
+    """Serve generated CSV/PNG/HTML files explicitly."""
+    file_path = Path("static") / filename
+    if file_path.exists():
+        return FileResponse(path=file_path, filename=filename)
+    else:
+        return HTMLResponse(f"<h3>❌ File not found: {filename}</h3>", status_code=404)
+
+
+# -------------------------------------------------------------
+# 🏠 Home page
+# -------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    html = (BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
-    return HTMLResponse(html)
-
-# === Route: analysis ===
-@app.post("/analyze_csv", response_class=HTMLResponse)
-async def analyze_csv(file: UploadFile = None):
-    try:
-        df = smart_read_csv(file)
-        if df.empty:
-            return HTMLResponse("<h3>❌ Uploaded file is empty or unreadable.</h3>")
-
-        mode = "abstract" if df.shape[1] == 1 else "coword"
-
-        # ==========================================================
-        # 1️⃣ Co-Word Mode: Build relations and clusters
-        # ==========================================================
-        if mode == "coword":
-            terms = df.apply(lambda x: [v for v in x if v != ""], axis=1).tolist()
-            edges = []
-            for row in terms:
-                for i, t1 in enumerate(row):
-                    for t2 in row[i+1:]:
-                        edges.append(tuple(sorted((t1, t2))))
-            rel_df = pd.DataFrame(edges, columns=["source", "target"])
-            rel_df["weight"] = 1
-            rel_df = rel_df.groupby(["source", "target"])["weight"].sum().reset_index()
-
-            # --- Build network ---
-            G = nx.Graph()
-            for _, r in rel_df.iterrows():
-                G.add_edge(r["source"], r["target"], weight=r["weight"])
-
-            # --- Louvain clustering ---
-            partition = community.best_partition(G, weight="weight")
-
-            vertices = pd.DataFrame([
-                {"name": n, "carac": c, "value": G.degree(n), "value2": G.degree(n, weight="weight")}
-                for n, c in partition.items()
-            ])
-
-            # === Fix missing cluster numbers ===
-            all_terms = set(df.values.flatten()) - {""}
-            clustered_terms = set(vertices["name"])
-            missing_terms = list(all_terms - clustered_terms)
-
-            if missing_terms:
-                edges_lookup = rel_df.groupby("source")["target"].apply(list).to_dict()
-                for term in missing_terms:
-                    related = edges_lookup.get(term, [])
-                    related_clusters = [
-                        vertices.loc[vertices["name"] == r, "carac"].values
-                        for r in related if r in vertices["name"].values
-                    ]
-                    related_clusters = [int(x[0]) for x in related_clusters if len(x) > 0]
-                    if related_clusters:
-                        assigned = min(pd.Series(related_clusters).mode().values)
-                    else:
-                        assigned = int(vertices["carac"].min())
-                    vertices = pd.concat([vertices, pd.DataFrame([{
-                        "name": term, "value": 1, "value2": 1,
-                        "carac": assigned
-                    }])], ignore_index=True)
-
-            # --- Generate cluster labels ---
-            cluster_summary = (
-                vertices.groupby("carac")
-                .agg(member_count=("name", "count"),
-                     top_term=("name", lambda x: x.value_counts().idxmax()))
-                .reset_index()
-                .rename(columns={"carac": "cluster", "top_term": "cluster_label"})
-            )
-            cluster_summary.to_csv(RESULTS_DIR / "clusters.csv", index=False, encoding="utf-8-sig")
-
-            # --- Annotate cluster label to vertices ---
-            vertices = vertices.merge(cluster_summary, left_on="carac", right_on="cluster", how="left")
-            vertices.drop(columns=["cluster"], inplace=True)
-            vertices["carac_label"] = vertices["cluster_label"]
-            vertices.drop(columns=["cluster_label"], inplace=True)
-            vertices.to_csv(RESULTS_DIR / "vertices.csv", index=False, encoding="utf-8-sig")
-            rel_df.to_csv(RESULTS_DIR / "relations.csv", index=False, encoding="utf-8-sig")
-
-            # ==========================================================
-            # 2️⃣ Abstract Mode: Theme assignment algorithm (TAAA)
-            # ==========================================================
-        else:
-            abstracts = df.iloc[:, 0].astype(str)
-            words = [a.split() for a in abstracts]
-            all_terms = list({t for lst in words for t in lst})
-            vertices = pd.DataFrame({
-                "name": all_terms,
-                "value": [len(t) % 10 + 1 for t in all_terms],
-                "carac": [i % 5 + 1 for i in range(len(all_terms))]
-            })
-
-            cluster_summary = (
-                vertices.groupby("carac")
-                .agg(member_count=("name", "count"),
-                     cluster_label=("name", lambda x: x.value_counts().idxmax()))
-                .reset_index()
-            )
-            cluster_summary.to_csv(RESULTS_DIR / "clusters.csv", index=False, encoding="utf-8-sig")
-
-            article_assign = []
-            for i, row in enumerate(words):
-                assigned_clusters = [vertices.loc[vertices["name"] == t, "carac"].values
-                                     for t in row if t in vertices["name"].values]
-                assigned_clusters = [int(x[0]) for x in assigned_clusters if len(x) > 0]
-                if assigned_clusters:
-                    theme = min(pd.Series(assigned_clusters).mode().values)
-                else:
-                    theme = 0
-                article_assign.append({"article_id": i+1, "theme": theme})
-            pd.DataFrame(article_assign).to_csv(
-                RESULTS_DIR / "article_theme_assign.csv", index=False, encoding="utf-8-sig"
-            )
-
-        # ==========================================================
-        # 3️⃣ Visualization: top 20 terms (Theme Scatter)
-        # ==========================================================
-        top20 = vertices.sort_values("value2", ascending=False).head(20)
-        fig = px.scatter(
-            top20, x="value2", y="value", text=["#"+t for t in top20["name"]],
-            color="carac", size="value", color_continuous_scale="reds",
-            title="Theme Scatter (Top 20 Terms)"
-        )
-        fig.update_traces(textposition="top center", textfont=dict(color="black"))
-        fig.write_html(RESULTS_DIR / "theme_scatter.html", include_plotlyjs="cdn")
-
-        # --- Theme Bar (H-index style) ---
-        freq_table = vertices["carac"].value_counts().reset_index()
-        freq_table.columns = ["carac", "count"]
-        freq_table = freq_table[freq_table["count"] >= freq_table.index + 1]
-        plt.figure(figsize=(8, 5))
-        plt.barh(freq_table["carac"].astype(str), freq_table["count"], color="#007ACC")
-        plt.xlabel("Frequency"); plt.ylabel("Cluster Number")
-        plt.title("Top H-Themes Distribution")
-        plt.tight_layout()
-        plt.savefig(RESULTS_DIR / "theme_bar.png", bbox_inches="tight"); plt.close()
-
-        # ==========================================================
-        # 4️⃣ HTML Output
-        # ==========================================================
-        msg = f"""
-        <html><body style='font-family:Segoe UI,Noto Sans TC'>
-        <h2>✅ Analysis Complete</h2>
-        <p>Detected {vertices['carac'].nunique()} clusters, {len(vertices)} vertices.</p>
-        <ul>
-            <li>🧩 <a href='/static/vertices.csv' target='_blank'>Vertices (CSV)</a></li>
-            <li>🔗 <a href='/static/relations.csv' target='_blank'>Relations (CSV)</a></li>
-            <li>🌈 <a href='/static/clusters.csv' target='_blank'>Cluster Labels (CSV)</a></li>
-            <li>📘 <a href='/static/article_theme_assign.csv' target='_blank'>Article–Theme Assignment (CSV)</a></li>
-            <li>📊 <a href='/static/theme_bar.png' target='_blank'>H-Theme Bar (PNG)</a></li>
-            <li>🎨 <a href='/static/theme_scatter.html' target='_blank'>Theme Scatter (Interactive)</a></li>
-        </ul>
-        <form action="/" method="get">
-          <button style='margin-top:20px;padding:8px 16px;background:#007ACC;color:white;border:none;border-radius:6px;cursor:pointer'>
-            🏠 Return Home
-          </button>
-        </form>
-        </body></html>
-        """
-        return HTMLResponse(msg)
-
-    except Exception:
-        err = traceback.format_exc()
-        return HTMLResponse(f"<h3>❌ Internal Error:</h3><pre>{err}</pre>")
+    index_html = Path("static/index.html")
+    if index_html.exists():
+        return HTMLResponse(index_html.read_text(encoding="utf-8"))
+    else:
+        return HTMLResponse("<h2>Upload interface missing. Please redeploy with index.html.</h2>")
