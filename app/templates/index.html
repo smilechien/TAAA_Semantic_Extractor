@@ -1,16 +1,39 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
 <meta charset="UTF-8">
 <title>🌐 TAAA Semantic–Co-Word Analyzer</title>
 <style>
-body{font-family:'Segoe UI','Noto Sans TC',sans-serif;background:#fafafa;text-align:center;margin:40px;}
-.container{background:#fff;padding:30px;border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,0.1);display:inline-block;width:540px;}
-h1{margin-top:0;color:#2a2a2a;}h2{color:#555;font-weight:400;margin-top:-5px;}
-label{font-weight:bold;}button{margin-top:15px;background:#007ACC;color:white;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:15px;}
+body {
+  font-family:'Segoe UI','Noto Sans TC','Microsoft JhengHei',sans-serif;
+  background:#fafafa;
+  text-align:center;
+  margin:40px;
+}
+.container {
+  background:#fff;
+  padding:30px;
+  border-radius:14px;
+  box-shadow:0 2px 10px rgba(0,0,0,0.1);
+  display:inline-block;
+  width:520px;
+}
+h1{margin-top:0;color:#2a2a2a;}
+h2{color:#555;font-weight:400;margin-top:-5px;}
+label{font-weight:bold;}
+button{
+  margin-top:15px;
+  background:#007ACC;
+  color:white;
+  border:none;
+  padding:10px 24px;
+  border-radius:6px;
+  cursor:pointer;
+  font-size:15px;
+}
 button:hover{background:#005da6;}
 .spinner{display:none;margin-top:15px;font-style:italic;color:#666;}
-.preview{margin-top:20px;text-align:left;font-size:13px;overflow-x:auto;max-height:220px;}
+.preview{margin-top:20px;text-align:left;font-size:13px;overflow-x:auto;}
 .preview table{border-collapse:collapse;width:100%;}
 .preview th,.preview td{border:1px solid #ccc;padding:4px;}
 .indicator{margin-top:8px;font-size:14px;color:#777;}
@@ -22,7 +45,6 @@ footer{margin-top:25px;font-size:13px;color:#888;}
 .downloads a{display:inline-block;margin:6px;color:#007ACC;text-decoration:none;}
 .downloads a:hover{text-decoration:underline;}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/jschardet@3.0.0/dist/jschardet.min.js"></script>
 </head>
 <body>
 <div class="container">
@@ -37,41 +59,58 @@ footer{margin-top:25px;font-size:13px;color:#888;}
   </div>
 
   <form id="uploadForm" enctype="multipart/form-data">
-    <label>Select your CSV file:</label><br>
+    <label for="file">Select your CSV file:</label><br>
     <input type="file" id="file" name="file" accept=".csv" required><br>
     <button type="submit">🚀 Analyze</button>
   </form>
 
-  <div class="spinner" id="spinner">⏳ Analyzing… / 分析中…</div>
-  <div class="indicator" id="modeIndicator">Mode auto-detecting…</div>
+  <div class="spinner" id="spinner">⏳ Analyzing … / 分析中 …</div>
+  <div class="indicator" id="modeIndicator">Mode auto-detecting …</div>
   <div id="modeHint" style="font-size:13px;color:#666;margin-top:5px;"></div>
   <div class="preview" id="preview"></div>
 
   <footer>
-    1-column → Abstract Mode · Multi-column → Co-Word Mode · Louvain Cluster Method<br>
-    © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v14.2
+    1-column → Abstract Mode · Multi-column → Co-Word Mode<br>
+    © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v14.7
   </footer>
 </div>
 
 <script>
+// === Elements ===
 const fileInput=document.getElementById("file");
 const preview=document.getElementById("preview");
 const indicator=document.getElementById("modeIndicator");
 const modeHint=document.getElementById("modeHint");
 const spinner=document.getElementById("spinner");
 
-fileInput.addEventListener("change",async()=>{
+// === Encoding-smart CSV preview ===
+fileInput.addEventListener("change",()=>{
   const file=fileInput.files[0];
   if(!file)return;
-  const buf=await file.arrayBuffer();
-  const view=new Uint8Array(buf);
-  const det=jschardet.detect(view);
-  const enc=(det.encoding||"utf-8").toLowerCase();
-  let decoder;
-  try{decoder=new TextDecoder(enc);}catch{decoder=new TextDecoder("utf-8");}
-  const text=decoder.decode(view);
 
-  const rows=text.split(/\r?\n/).filter(r=>r.trim()).slice(0,6).map(r=>r.split(","));
+  const reader=new FileReader();
+  reader.onload=e=>{
+    let text=e.target.result;
+    // quick heuristic for garbled bytes → retry as Big5
+    if(/[ ]/.test(text)||/[·¤§]/.test(text)){
+      const fr2=new FileReader();
+      fr2.onload=ev=>{
+        try{
+          const decoder=new TextDecoder("big5");
+          text=decoder.decode(ev.target.result);
+        }catch(err){console.warn("Big5 decode fallback failed",err);}
+        showPreview(text);
+      };
+      fr2.readAsArrayBuffer(file);
+    }else{
+      showPreview(text);
+    }
+  };
+  reader.readAsText(file); // UTF-8 first
+});
+
+function showPreview(text){
+  const rows=text.split(/\r?\n/).slice(0,6).map(r=>r.split(/,|\t/));
   if(!rows.length)return;
   let html="<h3>📄 Preview of Uploaded CSV (Top 5 Rows)</h3><table><thead><tr>";
   rows[0].forEach(c=>html+=`<th>${c}</th>`); html+="</tr></thead><tbody>";
@@ -85,25 +124,26 @@ fileInput.addEventListener("change",async()=>{
   if(cols<=1){
     indicator.textContent="🧠 Detected Abstract Mode";
     indicator.className="indicator blink-green";
-    modeHint.textContent="Detected single-column file → abstract analysis (單欄 → 摘要模式)";
+    modeHint.textContent="單欄 → 摘要模式 (Abstract Mode)";
   }else{
     indicator.textContent="🐾 Detected Co-Word Mode";
     indicator.className="indicator blink-blue";
-    modeHint.textContent="Detected multi-column file → co-word analysis (多欄 → 共詞模式)";
+    modeHint.textContent="多欄 → 共詞模式 (Co-Word Mode)";
   }
-});
+}
 
+// === Upload & analyze ===
 document.getElementById("uploadForm").addEventListener("submit",async e=>{
   e.preventDefault();
   const file=fileInput.files[0];
   if(!file)return;
   spinner.style.display="block";
-  indicator.textContent+=" – Processing…";
+  indicator.textContent+=" – Processing …";
   const data=new FormData();
   data.append("file",file);
   try{
-    const res=await fetch("/analyze_csv",{method:"POST",body:data});
-    const html=await res.text();
+    const response=await fetch("/analyze_csv",{method:"POST",body:data});
+    const html=await response.text();
     document.open();document.write(html);document.close();
   }catch{
     spinner.style.display="none";
