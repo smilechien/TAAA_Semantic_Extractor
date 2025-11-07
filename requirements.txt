@@ -1,22 +1,11 @@
-# === Web Framework ===
 fastapi==0.115.2
 uvicorn==0.32.0
-python-multipart==0.0.20
-
-# === Data Processing ===
 pandas==2.2.3
 numpy==2.3.4
-
-# === Plotting & Visualization ===
 matplotlib==3.9.2
 plotly==5.24.1
-
-# === Graph & Community Detection ===
 networkx==3.3
 python-louvain==0.16
-
-# === Encoding Detection ===
 chardet==5.2.0
+python-multipart==0.0.20
 
-# === Misc Utilities ===
-pydantic==2.12.4
