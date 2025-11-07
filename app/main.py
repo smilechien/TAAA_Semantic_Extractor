@@ -13,7 +13,8 @@ import chardet, io, traceback
 # ---------- FastAPI setup ----------
 app = FastAPI()
 BASE_DIR = Path(__file__).resolve().parent
-RESULTS_DIR = Path("/tmp")   # ✅ Render-safe temp directory
+TEMPLATE_FILE = BASE_DIR / "templates" / "index.html"
+RESULTS_DIR = Path("/tmp")   # ✅ Render-safe temporary directory
 app.mount("/static", StaticFiles(directory=RESULTS_DIR), name="static")
 
 # ---------- Helper: robust CSV reader ----------
@@ -30,18 +31,11 @@ def smart_read_csv(file: UploadFile) -> pd.DataFrame:
 # ---------- Route: home ----------
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    return HTMLResponse("""
-    <html><body style='font-family:Segoe UI, Noto Sans TC'>
-    <h2>📂 Upload a CSV File for Co-Word Analysis</h2>
-    <p>Upload a text-only CSV (each cell = keyword or phrase). The app will detect co-occurrences and generate 5 downloadable results.</p>
-    <form action="/analyze_csv" enctype="multipart/form-data" method="post">
-        <input name="file" type="file" accept=".csv" required>
-        <button style='margin-left:10px;padding:8px 16px;background:#007ACC;color:white;border:none;border-radius:6px;cursor:pointer'>
-            🚀 Analyze
-        </button>
-    </form>
-    </body></html>
-    """)
+    if TEMPLATE_FILE.exists():
+        html = TEMPLATE_FILE.read_text(encoding="utf-8")
+        return HTMLResponse(html)
+    else:
+        return HTMLResponse("<h3>Missing index.html template.</h3>")
 
 # ---------- Route: analyze ----------
 @app.post("/analyze_csv", response_class=HTMLResponse)
@@ -59,19 +53,21 @@ async def analyze_csv(file: UploadFile = None):
         header_note = ""
         vertex_count, relation_count = 0, 0
 
+        # ---------- Abstract Mode ----------
         if mode == "abstract":
             header_note = "📘 Abstract mode: single-column text detected → keyword frequency analysis performed."
             for i, text in enumerate(df.iloc[:, 0].astype(str)):
                 terms.append({"term": f"Theme_{i%5+1}", "freq": len(text.split())})
+
+        # ---------- Co-Word Mode ----------
         else:
             header_note = "📗 Auto mode: Text-only CSV detected → pairwise relations generated."
-            # Collect text-only terms
             for col in df.columns:
                 for val in df[col]:
                     if isinstance(val, str) and val.strip():
                         terms.append({"term": val.strip(), "freq": 1})
 
-            # ---------- Create vertices ----------
+            # Create vertices
             all_terms = pd.unique(df.values.ravel())
             all_terms = [t.strip() for t in all_terms if isinstance(t, str) and t.strip()]
             vertices = pd.DataFrame(sorted(set(all_terms)), columns=["label"])
@@ -79,7 +75,7 @@ async def analyze_csv(file: UploadFile = None):
             vertices.to_csv(RESULTS_DIR / "vertices.csv", index=False, encoding="utf-8-sig")
             vertex_count = len(vertices)
 
-            # ---------- Create relations (pair co-occurrence) ----------
+            # Create relations (pair co-occurrence)
             pairs = []
             for _, row in df.iterrows():
                 words = [w.strip() for w in row if isinstance(w, str) and w.strip()]
@@ -111,17 +107,27 @@ async def analyze_csv(file: UploadFile = None):
         tfile = RESULTS_DIR / "themes.csv"
         theme_counts.to_csv(tfile, index=False, encoding="utf-8-sig")
 
-        # ---------- Visuals ----------
+        # ---------- H-theme distribution ----------
+        theme_counts = theme_counts.sort_values("freq", ascending=False).reset_index(drop=True)
+        theme_counts["rank"] = theme_counts.index + 1
+        h_theme = theme_counts[theme_counts["freq"] >= theme_counts["rank"]]
+        h_value = len(h_theme)
+        if h_value == 0:
+            h_value = 1
+        topH = theme_counts.head(h_value)
         top20 = theme_counts.head(20)
 
-        # Bar
+        # ---------- Bar chart ----------
         plt.figure(figsize=(8, 5))
-        plt.barh(top20["term"].head(10)[::-1], top20["freq"].head(10)[::-1], color="#007ACC")
-        plt.xlabel("Frequency"); plt.ylabel("Term")
-        plt.title("Top 10 Themes"); plt.tight_layout()
-        plt.savefig(RESULTS_DIR / "theme_bar.png", bbox_inches="tight"); plt.close()
+        plt.barh(topH["term"][::-1], topH["freq"][::-1], color="#007ACC")
+        plt.xlabel("Frequency", color="black")
+        plt.ylabel("Term", color="black")
+        plt.title(f"Top H-Theme Distribution (H = {h_value})", color="black")
+        plt.tight_layout()
+        plt.savefig(RESULTS_DIR / "theme_bar.png", bbox_inches="tight")
+        plt.close()
 
-        # Scatter
+        # ---------- Scatter chart ----------
         fig = px.scatter(
             top20,
             x="freq",
@@ -129,9 +135,26 @@ async def analyze_csv(file: UploadFile = None):
             text=["#"+t for t in top20["term"]],
             color="freq",
             color_continuous_scale="reds",
-            title="Theme Scatter (Top 20)"
+            title=f"Theme Scatter (Top {len(top20)} Terms, H = {h_value})"
         )
-        fig.update_traces(textposition="top center", textfont=dict(color="red"))
+        fig.update_traces(
+            textposition="top center",
+            textfont=dict(color="red", size=14),
+            marker=dict(size=12, line=dict(width=1, color="black"))
+        )
+        fig.update_layout(
+            font=dict(color="black"),
+            xaxis_title="Frequency",
+            yaxis_title="Rank",
+            title_font=dict(color="black", size=18),
+            coloraxis_colorbar=dict(title="Frequency")
+        )
+        fig.add_annotation(
+            text=f"H-theme count: {h_value} clusters",
+            xref="paper", yref="paper",
+            x=0.02, y=1.08, showarrow=False,
+            font=dict(color="black", size=14)
+        )
         fig.write_html(RESULTS_DIR / "theme_scatter.html", include_plotlyjs="cdn")
 
         # ---------- Final HTML ----------
