@@ -2,26 +2,26 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>🌐 TAAA Semantic–Co-Word Analyzer v16.3</title>
+<title>🌐 TAAA Semantic–Co-Word Analyzer</title>
 <style>
-body {
-  font-family: 'Segoe UI','Noto Sans TC','Microsoft JhengHei',sans-serif;
+body{
+  font-family:'Segoe UI','Noto Sans TC',sans-serif;
   background:#fafafa;
   text-align:center;
   margin:40px;
 }
-.container {
+.container{
   background:#fff;
   padding:30px;
   border-radius:14px;
   box-shadow:0 2px 10px rgba(0,0,0,0.1);
   display:inline-block;
-  width:560px;
+  width:580px;
 }
-h1 {margin-top:0;color:#2a2a2a;}
-h2 {color:#555;font-weight:400;margin-top:-5px;}
-label {font-weight:bold;}
-button {
+h1{margin-top:0;color:#2a2a2a;}
+h2{color:#555;font-weight:400;margin-top:-5px;}
+label{font-weight:bold;}
+button{
   margin-top:15px;
   background:#007ACC;
   color:white;
@@ -31,7 +31,7 @@ button {
   cursor:pointer;
   font-size:15px;
 }
-button:hover {background:#005da6;}
+button:hover{background:#005da6;}
 .spinner{display:none;margin-top:15px;font-style:italic;color:#666;}
 .preview{margin-top:20px;text-align:left;font-size:13px;overflow-x:auto;}
 .preview table{border-collapse:collapse;width:100%;}
@@ -54,7 +54,7 @@ footer{margin-top:25px;font-size:13px;color:#888;}
   <div class="downloads">
     <p><strong>📥 Download Sample Datasets</strong></p>
     <a href="/static/abstract_sample.csv" target="_blank">🧠 Abstract Sample (1 column)</a><br>
-    <a href="/static/coword_sample.csv" target="_blank">🐾 Co-Word Sample (multi-column)</a><br>
+    <a href="/static/coword_sample.csv" target="_blank">🐾 Co-Word Sample (Multi-column)</a><br>
     <a href="/static/readme_dataset_info.csv" target="_blank">📘 Readme Dataset Info</a>
   </div>
 
@@ -64,14 +64,14 @@ footer{margin-top:25px;font-size:13px;color:#888;}
     <button type="submit">🚀 Analyze</button>
   </form>
 
-  <div class="spinner" id="spinner">⏳ Analyzing… / 分析中…</div>
-  <div class="indicator" id="modeIndicator">Mode auto-detecting…</div>
+  <div class="spinner" id="spinner">⏳ Analyzing … / 分析中 …</div>
+  <div class="indicator" id="modeIndicator">Mode auto-detecting …</div>
   <div id="modeHint" style="font-size:13px;color:#666;margin-top:5px;"></div>
   <div class="preview" id="preview"></div>
 
   <footer>
-    1-column → Abstract Mode · Multi-column → Co-Word Mode<br>
-    © 2025 Smile Chien · TAAA v16.3
+    1-column → Abstract Mode · Multi-column → Co-Word Mode <br>
+    © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v16.6
   </footer>
 </div>
 
@@ -82,20 +82,28 @@ const indicator=document.getElementById("modeIndicator");
 const modeHint=document.getElementById("modeHint");
 const spinner=document.getElementById("spinner");
 
+// ---------- UTF-8 / Big5 safe preview ----------
 fileInput.addEventListener("change",()=>{
   const file=fileInput.files[0];
   if(!file)return;
   const reader=new FileReader();
   reader.onload=e=>{
-    // Auto-detect encoding (Big5 / UTF-8)
-    const bytes=new Uint8Array(e.target.result);
-    let encoding="utf-8";
-    const text=new TextDecoder(encoding,{fatal:false}).decode(bytes);
-    const rows=text.split(/\r?\n/).slice(0,6).map(r=>r.split(/,|;|\t/));
+    let text=e.target.result;
+
+    // try to decode garbled Big5 text if UTF-8 fails
+    if(/[\uFFFD]/.test(text)){
+      try{
+        text=new TextDecoder("big5").decode(
+          new Uint8Array([...e.target.result].map(c=>c.charCodeAt(0)))
+        );
+      }catch{}
+    }
+
+    const lines=text.split(/\r?\n/).filter(l=>l.trim().length>0).slice(0,6);
+    const rows=lines.map(l=>l.split(/,|;|\t/));
     if(!rows.length)return;
 
-    // Build preview table
-    let html="<p><strong>📄 Preview of Uploaded CSV (Top 5 Rows)</strong></p><table><thead><tr>";
+    let html="<table><thead><tr>";
     rows[0].forEach(c=>html+=`<th>${c}</th>`); html+="</tr></thead><tbody>";
     for(let i=1;i<rows.length;i++){
       html+="<tr>"+rows[i].map(c=>`<td>${c}</td>`).join("")+"</tr>";
@@ -103,28 +111,27 @@ fileInput.addEventListener("change",()=>{
     html+="</tbody></table>";
     preview.innerHTML=html;
 
-    // Detect mode
     const cols=rows[0].length;
     if(cols<=1){
       indicator.textContent="🧠 Detected Abstract Mode";
       indicator.className="indicator blink-green";
-      modeHint.textContent="Detected single-column file → using abstract analysis (摘要模式)";
+      modeHint.textContent="Single-column file → abstract analysis (單欄 → 摘要模式)";
     }else{
       indicator.textContent="🐾 Detected Co-Word Mode";
       indicator.className="indicator blink-blue";
-      modeHint.textContent="Detected multi-column file → using co-word analysis (共詞模式)";
+      modeHint.textContent="Multi-column file → co-word analysis (多欄 → 共詞模式)";
     }
   };
-  reader.readAsArrayBuffer(file);
+  reader.readAsText(file,"utf-8");
 });
 
-// Upload handler
+// ---------- Upload and Analyze ----------
 document.getElementById("uploadForm").addEventListener("submit",async e=>{
   e.preventDefault();
   const file=fileInput.files[0];
   if(!file)return;
   spinner.style.display="block";
-  indicator.textContent+=" – Processing…";
+  indicator.textContent+=" – Processing …";
   const data=new FormData();
   data.append("file",file);
   try{
