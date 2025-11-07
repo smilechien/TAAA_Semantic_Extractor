@@ -1,248 +1,249 @@
-# ============================================================
-# 🌐 TAAA Semantic–Co-Word Analyzer  v15.9
-# ============================================================
-# Robust, Render-ready build with:
-#   • UTF-8 / Big5 CSV resilience
-#   • DOI semantic extraction (GPT / OpenAlex)
-#   • Cluster detection + TAAA theme assignment
-#   • Static download outputs
-#   • HTML served from /templates/index.html
-# ============================================================
-
-import os, io, time, json, requests, pandas as pd, networkx as nx, plotly.express as px
-from collections import Counter
-from fastapi import FastAPI, UploadFile, File
+import os, io, re, time, base64, requests
+import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import networkx as nx
+from sklearn.feature_extraction.text import TfidfVectorizer
+from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from openai import OpenAI
-import matplotlib.pyplot as plt
+import plotly.express as px
 
-# ============================================================
-# 0️⃣ App setup
-# ============================================================
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-TEMPLATES_DIR = os.path.join(APP_DIR, "templates")
-STATIC_DIR = os.path.join(APP_DIR, "static")
+# -------------------------------------------------------
+# ✅ Config
+# -------------------------------------------------------
+app = FastAPI()
+BASE_DIR = os.path.dirname(__file__)
+STATIC_DIR = os.path.join(BASE_DIR, "static")
+TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
-app = FastAPI(title="TAAA Semantic–Co-Word Analyzer")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# ============================================================
-# 1️⃣ Safe CSV loader (UTF-8 / Big5 fallback)
-# ============================================================
-def load_csv(uploaded_file: UploadFile):
-    raw = uploaded_file.file.read()
-    for enc in ["utf-8-sig", "utf-8", "big5", "cp950"]:
+# -------------------------------------------------------
+# ✅ Helper: Safe CSV reader (UTF-8 / Big5 fallback)
+# -------------------------------------------------------
+def safe_read_csv(uploaded):
+    for enc in ["utf-8-sig", "utf-8", "cp950", "big5"]:
         try:
-            return pd.read_csv(io.BytesIO(raw), encoding=enc)
+            return pd.read_csv(uploaded.file, encoding=enc)
         except Exception:
-            continue
-    raise ValueError("❌ Unable to decode CSV with UTF-8/Big5 encodings")
+            uploaded.file.seek(0)
+    raise ValueError("Cannot decode file in UTF-8 or Big5")
 
-# ============================================================
-# 2️⃣ Dual semantic extractor (GPT Plus → OpenAlex fallback)
-# ============================================================
-def extract_semantic_phrases(dois):
+# -------------------------------------------------------
+# ✅ Helper: DOI→Abstract→Semantic Extraction
+# -------------------------------------------------------
+def get_abstracts_from_dois(df):
+    dois = df.iloc[:, 0].dropna().astype(str)
+    dois = [d for d in dois if re.search(r"10\.\d{4,9}/[-._;()/:A-Za-z0-9]+", d)]
+    if not dois:
+        return df
+
+    print(f"📖 {len(dois)} DOIs detected – fetching abstracts...")
+    abstracts = []
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     use_gpt = bool(api_key)
-    results = []
 
-    if use_gpt:
-        print("🔹 Using ChatGPT Plus semantic extraction")
-        client = OpenAI(api_key=api_key)
-        for doi in dois:
+    for doi in dois:
+        encoded = requests.utils.quote(doi, safe="")
+        url = f"https://api.openalex.org/works/https://doi.org/{encoded}"
+        abstract_text = ""
+        try:
+            r = requests.get(url, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                if "abstract_inverted_index" in data:
+                    inv = data["abstract_inverted_index"]
+                    pairs = sorted([(i, w) for w, pos in inv.items() for i in pos])
+                    abstract_text = " ".join([w for _, w in pairs])
+                elif "title" in data:
+                    abstract_text = data["title"]
+        except Exception as e:
+            abstract_text = f"Error: {e}"
+
+        if not abstract_text:
+            abstracts.append("No abstract found")
+            continue
+
+        # Extract semantics
+        if use_gpt:
             try:
-                prompt = f"Extract 10 concise scientific keywords or phrases from the article with DOI {doi}. Return them separated by semicolons."
-                resp = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.3,
-                )
-                kw = resp.choices[0].message.content.strip()
-                results.append({"doi": doi, "source": "GPT", "keywords": kw})
+                client = OpenAI(api_key=api_key)
+                msg = [{"role": "user", "content":
+                        f"Extract 10 concise research keywords from this abstract:\n\n{abstract_text}\n\nReturn comma-separated terms only."}]
+                resp = client.chat.completions.create(model="gpt-4o-mini", messages=msg)
+                sem_terms = resp.choices[0].message.content.strip()
             except Exception as e:
-                results.append({"doi": doi, "source": "GPT_error", "keywords": str(e)})
-            time.sleep(1)
-    else:
-        print("🔹 Using OpenAlex semantic extraction")
-        for doi in dois:
-            try:
-                encoded = requests.utils.quote(doi, safe="")
-                url = f"https://api.openalex.org/works/https://doi.org/{encoded}"
-                r = requests.get(url, timeout=15)
-                if r.status_code != 200:
-                    results.append({"doi": doi, "source": "OpenAlex_error", "keywords": None})
-                    continue
-                d = r.json()
-                kw = []
-                if "concepts" in d:
-                    kw += [c["display_name"] for c in sorted(
-                        d["concepts"], key=lambda x: x.get("score", 0), reverse=True)[:10]]
-                if "abstract_inverted_index" in d:
-                    flat = d["abstract_inverted_index"]
-                    recon = [""] * (max(sum(flat.values(), [])) + 1)
-                    for w, pos in flat.items():
-                        for p in pos:
-                            recon[p] = w
-                    text = " ".join(recon)
-                    toks = [t for t in text.lower().split() if len(t) > 3]
-                    kw += [w for w, _ in Counter(toks).most_common(10)]
-                kw = "; ".join(sorted(set(kw))) if kw else "(no keywords)"
-                results.append({"doi": doi, "source": "OpenAlex", "keywords": kw})
-            except Exception as e:
-                results.append({"doi": doi, "source": "OpenAlex_error", "keywords": str(e)})
-            time.sleep(1)
+                sem_terms = abstract_text
+        else:
+            vect = TfidfVectorizer(stop_words="english", max_features=10)
+            vect.fit([abstract_text])
+            sem_terms = ", ".join(vect.get_feature_names_out())
 
-    df = pd.DataFrame(results)
-    df.to_csv(os.path.join(STATIC_DIR, "doi_semantic_keywords.csv"),
-              index=False, encoding="utf-8-sig")
-    return df
+        abstracts.append(sem_terms)
+        time.sleep(1)
 
-# ============================================================
-# 3️⃣ Main analysis
-# ============================================================
+    return pd.DataFrame({"abstract": abstracts})
+
+# -------------------------------------------------------
+# ✅ Core Analyzer
+# -------------------------------------------------------
 @app.post("/analyze_csv", response_class=HTMLResponse)
 async def analyze_csv(file: UploadFile = File(...)):
     try:
-        df = load_csv(file)
+        df = safe_read_csv(file)
+        df = df.dropna(how="all")
+        if df.empty:
+            return HTMLResponse("<h3>❌ Empty CSV file.</h3>")
+
+        # Mode detection
+        mode = "abstract" if df.shape[1] <= 1 else "coword"
+        print(f"🔍 Detected mode: {mode}")
+
+        # If DOIs → fetch abstracts
+        if mode == "abstract" and df.iloc[:, 0].astype(str).str.contains("10\\.").any():
+            df = get_abstracts_from_dois(df)
+
+        # ---------------------------------------------------
+        # Generate vertices and relations
+        # ---------------------------------------------------
+        if mode == "coword":
+            terms = pd.unique(df.values.ravel())
+            terms = [t for t in terms if isinstance(t, str) and t.strip() != ""]
+            vertices = pd.DataFrame({"name": terms})
+            vertices["value"] = vertices["name"].map(lambda x: (df == x).sum().sum())
+            vertices["value2"] = vertices["value"].rank(ascending=False, method="min")
+            vertices["carac"] = vertices["value"].rank(ascending=False).astype(int)
+        else:
+            # abstract mode: treat terms as comma-separated keywords
+            all_terms = []
+            for t in df.iloc[:, 0].dropna():
+                all_terms.extend([w.strip() for w in str(t).split(",") if w.strip()])
+            vertices = pd.DataFrame(pd.Series(all_terms).value_counts().reset_index())
+            vertices.columns = ["name", "value"]
+            vertices["value2"] = vertices["value"].rank(ascending=False, method="min")
+            vertices["carac"] = vertices["value"].rank(ascending=False).astype(int)
+
+        # Relations (pairs within rows)
+        edges = []
+        for _, row in df.iterrows():
+            words = [str(x).strip() for x in row if isinstance(x, str) and x.strip()]
+            for i in range(len(words)):
+                for j in range(i + 1, len(words)):
+                    edges.append((words[i], words[j]))
+        relations = pd.DataFrame(edges, columns=["source", "target"])
+        relations = relations.value_counts().reset_index(name="weight")
+
+        # Filter relations not in vertices
+        valid_names = set(vertices["name"])
+        relations = relations[
+            relations["source"].isin(valid_names) &
+            relations["target"].isin(valid_names)
+        ]
+
+        # Build network & cluster
+        G = nx.Graph()
+        for _, r in relations.iterrows():
+            G.add_edge(r["source"], r["target"], weight=r["weight"])
+        communities = nx.algorithms.community.louvain_communities(G, weight="weight", seed=42)
+        cluster_map = {}
+        for i, comm in enumerate(communities, start=1):
+            for node in comm:
+                cluster_map[node] = i
+        vertices["carac"] = vertices["name"].map(cluster_map).fillna(0).astype(int)
+
+        # Assign semantic label (cluster leader)
+        theme_records = []
+        for cid, comm in enumerate(communities, start=1):
+            sub = vertices[vertices["name"].isin(comm)]
+            leader = sub.sort_values("value", ascending=False).iloc[0]["name"]
+            members = ", ".join(sub["name"].tolist())
+            theme_records.append({
+                "carac": cid,
+                "cluster_label": leader,
+                "member_count": len(comm),
+                "semantic_label": leader,
+                "members": members
+            })
+        theme = pd.DataFrame(theme_records)
+
+        # Save outputs
+        vpath = os.path.join(STATIC_DIR, "vertices.csv")
+        rpath = os.path.join(STATIC_DIR, "relations.csv")
+        tpath = os.path.join(STATIC_DIR, "theme.csv")
+        vertices.to_csv(vpath, index=False, encoding="utf-8-sig")
+        relations.to_csv(rpath, index=False, encoding="utf-8-sig")
+        theme.to_csv(tpath, index=False, encoding="utf-8-sig")
+
+        # H-Theme filtering (n ≥ rank)
+        freq = theme["member_count"].sort_values(ascending=False).reset_index(drop=True)
+        h = sum(freq >= freq.index + 1)
+        h_themes = theme.nlargest(h, "member_count")
+
+        # H-Theme Bar
+        plt.figure(figsize=(8, 5))
+        plt.barh(h_themes["semantic_label"], h_themes["member_count"], color="skyblue")
+        plt.gca().invert_yaxis()
+        plt.title(f"H-Theme Distribution (h={h})")
+        plt.tight_layout()
+        hbar_path = os.path.join(STATIC_DIR, "h_theme_bar.png")
+        plt.savefig(hbar_path, dpi=150)
+        plt.close()
+
+        # Theme Scatter (categorical colors)
+        top20 = vertices.nlargest(20, "value")
+        fig = px.scatter(
+            top20,
+            x="value", y="value2",
+            color=top20["carac"].astype(str),
+            text="name",
+            title="Theme Scatter (Top 20 Terms, by Category)"
+        )
+        fig.update_traces(textposition="top center")
+        scatter_path = os.path.join(STATIC_DIR, "theme_scatter.html")
+        fig.write_html(scatter_path)
+
+        # Article–Theme assignment (TAAA)
+        art_assign = []
+        for idx, row in enumerate(df.itertuples(index=False), 1):
+            terms = [t for t in row if isinstance(t, str) and t.strip()]
+            assigned_clusters = [cluster_map.get(t, 0) for t in terms]
+            if not assigned_clusters:
+                theme_label = "Unassigned"
+            else:
+                mode_cluster = max(set(assigned_clusters), key=assigned_clusters.count)
+                theme_label = theme.loc[theme["carac"] == mode_cluster, "semantic_label"].values[0]
+            art_assign.append({"article_id": idx, "theme": theme_label})
+        assign_df = pd.DataFrame(art_assign)
+        apath = os.path.join(STATIC_DIR, "article_theme_assign.csv")
+        assign_df.to_csv(apath, index=False, encoding="utf-8-sig")
+
+        # Output HTML
+        html = f"""
+        <h2>✅ Analysis Completed (Mode: {mode})</h2>
+        <p>Detected {len(vertices)} vertices and {len(relations)} unique relations.</p>
+        <ul>
+          <li><a href="/static/vertices.csv" target="_blank">Vertices CSV</a></li>
+          <li><a href="/static/relations.csv" target="_blank">Relations CSV</a></li>
+          <li><a href="/static/theme.csv" target="_blank">Theme CSV</a></li>
+          <li><a href="/static/article_theme_assign.csv" target="_blank">Article–Theme Assignment CSV</a></li>
+          <li><a href="/static/h_theme_bar.png" target="_blank">H-Theme Bar (PNG)</a></li>
+          <li><a href="/static/theme_scatter.html" target="_blank">Theme Scatter (Interactive)</a></li>
+        </ul>
+        """
+        return HTMLResponse(html)
+
     except Exception as e:
-        return HTMLResponse(f"<h3>❌ CSV read error: {e}</h3>")
+        return HTMLResponse(f"<h3>Internal Error:<br>{e}</h3>")
 
-    mode = "abstract" if df.shape[1] == 1 else "coword"
-    print(f"🔍 Detected mode: {mode}")
-
-    # --- DOI detection ---
-    if mode == "abstract" and df.iloc[:, 0].astype(str).str.contains("10\\.").any():
-        dois = df.iloc[:, 0].dropna().unique().tolist()
-        extract_semantic_phrases(dois)
-
-    # --- Build relation pairs ---
-    rels = []
-    if mode == "coword":
-        for _, row in df.iterrows():
-            terms = [str(x).strip() for x in row if pd.notna(x) and str(x).strip()]
-            for i, a in enumerate(terms):
-                for b in terms[i + 1 :]:
-                    rels.append(tuple(sorted([a, b])))
-    else:
-        for _, row in df.iterrows():
-            words = str(row.iloc[0]).split()
-            for i, a in enumerate(words):
-                for b in words[i + 1 :]:
-                    rels.append(tuple(sorted([a, b])))
-
-    if not rels:
-        return HTMLResponse("<h3>❌ No valid relations found.</h3>")
-
-    rel = (pd.DataFrame(rels, columns=["source", "target"])
-           .value_counts().reset_index(name="weight"))
-    rel.to_csv(os.path.join(STATIC_DIR, "relations.csv"),
-               index=False, encoding="utf-8-sig")
-
-    # --- Vertices ---
-    vertices = pd.DataFrame(pd.concat([rel["source"], rel["target"]]).unique(),
-                            columns=["name"])
-    freq = pd.concat([rel["source"], rel["target"]]).value_counts().reset_index()
-    freq.columns = ["name", "value2"]
-    vertices = vertices.merge(freq, on="name", how="left")
-    vertices["value2"] = pd.to_numeric(vertices["value2"], errors="coerce").fillna(1)
-    vertices["value"] = vertices["value2"]
-    vertices.to_csv(os.path.join(STATIC_DIR, "vertices.csv"),
-                    index=False, encoding="utf-8-sig")
-
-    # --- Cluster detection (Louvain) ---
-    G = nx.from_pandas_edgelist(rel, "source", "target", "weight")
-    try:
-        from networkx.algorithms.community import louvain_communities
-        comms = louvain_communities(G, seed=42)
-    except Exception:
-        comms = [list(G.nodes())]
-    cluster_map = {n: i + 1 for i, c in enumerate(comms) for n in c}
-    vertices["cluster"] = vertices["name"].map(cluster_map).fillna(0).astype(int)
-
-    # --- Theme summary ---
-    theme_summary = (
-        vertices.groupby("cluster", as_index=False)
-        .apply(lambda g: pd.Series({
-            "cluster_label": g.sort_values("value2", ascending=False)["name"].iloc[0],
-            "member_count": len(g),
-            "semantic_label": g.sort_values("value2", ascending=False)["name"].iloc[0],
-            "members": ", ".join(g["name"].tolist())
-        }))
-    )
-    theme_summary.to_csv(os.path.join(STATIC_DIR, "theme.csv"),
-                         index=False, encoding="utf-8-sig")
-
-    # --- Article–Theme assignment ---
-    article_records = []
-    for i, row in enumerate(df.itertuples(index=False), 1):
-        terms = [v for v in row if str(v).strip()]
-        clusters = vertices.loc[vertices["name"].isin(terms), "cluster"].tolist()
-        theme_num = min(pd.Series(clusters).mode().values) if clusters else -1
-        article_records.append({"article_id": i, "theme": theme_num})
-    art_df = pd.DataFrame(article_records)
-    theme_map = dict(zip(theme_summary["cluster"], theme_summary["cluster_label"]))
-    art_df["theme_label"] = art_df["theme"].map(theme_map)
-    art_df.to_csv(os.path.join(STATIC_DIR, "article_theme_assign.csv"),
-                  index=False, encoding="utf-8-sig")
-
-    # --- Visuals ---
-    top20 = vertices.sort_values("value2", ascending=False).head(20)
-    fig_scatter = px.scatter(
-        top20,
-        x="value2",
-        y=top20.index + 1,
-        text="name",
-        color=top20["cluster"].astype(str),
-        size="value2",
-        color_discrete_sequence=px.colors.qualitative.Safe,
-        title=f"Theme Scatter (Top 20 Terms, H = {len(theme_summary)})",
-        labels={"x": "Frequency", "y": "Rank", "color": "Cluster"},
-    )
-    fig_scatter.update_traces(textposition="top center", textfont=dict(color="black"))
-    fig_scatter.write_html(os.path.join(STATIC_DIR, "theme_scatter.html"),
-                           include_plotlyjs="cdn")
-
-    plt.figure(figsize=(6, 4))
-    theme_summary.plot.barh(x="cluster_label", y="member_count", legend=False)
-    plt.title(f"Top H-Theme Distribution (H = {len(theme_summary)})")
-    plt.xlabel("Count")
-    plt.tight_layout()
-    plt.savefig(os.path.join(STATIC_DIR, "h_theme_bar.png"), dpi=150)
-    plt.close()
-
-    # --- HTML response ---
-    return HTMLResponse(f"""
-    <h2>✅ Analysis Complete ({mode} mode)</h2>
-    <p>Detected {len(vertices)} vertices and {len(rel)} relations.</p>
-    <ul>
-      <li><a href='/static/vertices.csv'>Vertices (CSV)</a></li>
-      <li><a href='/static/relations.csv'>Relations (CSV)</a></li>
-      <li><a href='/static/theme.csv'>Theme Summary (CSV)</a></li>
-      <li><a href='/static/article_theme_assign.csv'>Article–Theme Assignment (CSV)</a></li>
-      <li><a href='/static/h_theme_bar.png'>📊 H-Theme Bar (PNG)</a></li>
-      <li><a href='/static/theme_scatter.html'>🎨 Theme Scatter (Interactive)</a></li>
-      <li><a href='/static/doi_semantic_keywords.csv'>🔗 DOI Semantic Keywords (CSV)</a></li>
-    </ul>
-    """)
-
-# ============================================================
-# 4️⃣ Home page served from /templates/
-# ============================================================
+# -------------------------------------------------------
+# ✅ Home page
+# -------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    html_path = os.path.join(TEMPLATES_DIR, "index.html")
-    if not os.path.exists(html_path):
-        return HTMLResponse("<h3>⚠️ index.html not found under /templates.</h3>", status_code=404)
-    with open(html_path, "r", encoding="utf-8") as f:
-        html = f.read()
-    return HTMLResponse(html)
-
-# Generic safe file route
-@app.get("/{filename}")
-async def serve_static(filename: str):
-    path = os.path.join(STATIC_DIR, filename)
-    if os.path.exists(path):
-        return FileResponse(path)
-    return HTMLResponse('{"detail":"Not Found"}', status_code=404)
+    index_path = os.path.join(TEMPLATE_DIR, "index.html")
+    with open(index_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read())
