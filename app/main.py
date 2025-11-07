@@ -1,6 +1,6 @@
 # ============================================================
-# 🧠 TAAA Semantic–Co-Word Analyzer (v17.4)
-# Handles edge-lists AND wide co-word matrices
+# 🧠 TAAA Semantic–Co-Word Analyzer (v17.6)
+# Robust handling for 1–3+ column data and disconnected graphs
 # ============================================================
 
 import os, io, requests
@@ -45,16 +45,14 @@ def normalize_headers(df):
     alias = {
         "term1": "source", "node1": "source", "word1": "source", "keyword1": "source",
         "term2": "target", "node2": "target", "word2": "target", "keyword2": "target",
-        "from": "source", "to": "target"
+        "from": "source", "to": "target", "value": "weight"
     }
     df.rename(columns={k: v for k, v in alias.items() if k in df.columns}, inplace=True)
     return df
 
 def wide_to_edges(df):
-    """Convert wide matrix or coauthor table to edge list."""
+    """Convert wide co-word/affiliation table into edge list."""
     cols = list(df.columns)
-    if len(cols) < 2:
-        raise ValueError("Need at least two columns for wide-to-edge conversion.")
     src_col = cols[0]
     melt_df = df.melt(id_vars=[src_col], var_name="target_col", value_name="target")
     melt_df.rename(columns={src_col: "source"}, inplace=True)
@@ -83,42 +81,63 @@ async def analyze_csv(request: Request, file: UploadFile):
         # --------------------------------------------------------
         if mode == "coword":
             df = normalize_headers(df)
-            cols = df.columns.tolist()
+            ncols = len(df.columns)
 
-            # if already edge-list format
-            if "source" in cols and "target" in cols:
+            # CASE 1️⃣: 3 columns = weighted edges
+            if ncols == 3:
+                cols = list(df.columns)
                 edges = df.copy()
-                edges["weight"] = pd.to_numeric(edges.get("weight", 1), errors="coerce").fillna(1)
+                edges.rename(columns={cols[0]: "source", cols[1]: "target", cols[2]: "weight"}, inplace=True)
+                edges["weight"] = pd.to_numeric(edges["weight"], errors="coerce").fillna(1)
+
+            # CASE 2️⃣: 2 columns = unweighted edges
+            elif ncols == 2:
+                cols = list(df.columns)
+                edges = df.copy()
+                edges.rename(columns={cols[0]: "source", cols[1]: "target"}, inplace=True)
+                edges["weight"] = 1
+
+            # CASE 3️⃣: ≥4 columns = wide co-word table
             else:
-                # auto-convert wide matrix into edge list
                 edges = wide_to_edges(df)
 
             # --- Build graph ---
+            if edges.empty:
+                return HTMLResponse("<h3>❌ No valid edge data found.</h3>")
             G = nx.from_pandas_edgelist(edges, "source", "target", ["weight"])
+            if G.number_of_nodes() == 0:
+                return HTMLResponse("<h3>❌ No valid nodes in data.</h3>")
+
             vertices = pd.DataFrame({"term": list(G.nodes())})
             vertices["degree"] = [d for _, d in G.degree()]
             vertices["strength"] = [
                 sum(w for _, _, w in G.edges(n, data="weight")) for n in G.nodes()
             ]
 
-            # Louvain clustering
-            import community
-            partition = community.best_partition(G)
-            vertices["cluster"] = vertices["term"].map(partition)
+            # --- Louvain clustering ---
+            try:
+                import community
+                partition = community.best_partition(G)
+                vertices["cluster"] = vertices["term"].map(partition)
+            except Exception:
+                # fallback for disconnected or small networks
+                vertices["cluster"] = 0
+
+            # --- Safety fallback if cluster missing ---
+            if "cluster" not in vertices.columns:
+                vertices["cluster"] = 0
 
             # --- Theme summary ---
             theme_df = (
-                vertices["cluster"].value_counts()
-                .reset_index()
-                .rename(columns={"index": "cluster", "cluster": "member_count"})
+                vertices.groupby("cluster").size()
+                .reset_index(name="member_count")
+                .sort_values("member_count", ascending=False)
             )
             theme_df.to_csv(os.path.join(STATIC_DIR, "theme.csv"), index=False, encoding="utf-8-sig")
 
             # --- Bar chart ---
             plt.figure(figsize=(7, 5))
-            theme_df.sort_values("member_count", ascending=True).plot.barh(
-                x="cluster", y="member_count", legend=False
-            )
+            theme_df.plot.barh(x="cluster", y="member_count", legend=False)
             plt.title(f"Top H-Theme Distribution (H = {len(theme_df)})")
             plt.tight_layout()
             plt.savefig(os.path.join(STATIC_DIR, "h_theme_bar.png"), dpi=150)
@@ -136,11 +155,10 @@ async def analyze_csv(request: Request, file: UploadFile):
                 y="value",
                 color=vertices["cluster"].astype(str),
                 text="term",
-                title="Theme Scatter (Top 20 Terms)",
-                labels={"value2": "X: Value2", "value": "Y: Value"},
+                title="Theme Scatter (Top 20 Terms by Degree & Strength)",
+                labels={"value2": "X: Degree", "value": "Y: Strength"},
                 height=600,
             )
-            # Add red dotted mean lines
             fig.add_shape(
                 type="line",
                 x0=mean_x,
@@ -168,24 +186,17 @@ async def analyze_csv(request: Request, file: UploadFile):
               <li><a href="/static/h_theme_bar.png" target="_blank">H-Theme Bar (PNG)</a></li>
               <li><a href="/static/theme_scatter.html" target="_blank">Theme Scatter (Interactive)</a></li>
             </ul>
-            <div style="margin-top:40px;">
-              <button onclick="window.location.href='/'"
-                style="background:#007ACC;color:white;border:none;padding:10px 24px;
-                       border-radius:6px;cursor:pointer;font-size:15px;">
-                ⬅️ Return to Home
-              </button>
-            </div>
             <footer style="margin-top:25px;font-size:13px;color:#888;">
-              © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v17.4
+              © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v17.6
             </footer>
             """
             return HTMLResponse(html)
 
         # --------------------------------------------------------
-        # 🔍 ABSTRACT MODE (placeholder)
+        # 🔍 ABSTRACT MODE (1 column)
         # --------------------------------------------------------
         else:
-            return HTMLResponse("<h3>Abstract mode not applicable for this dataset.</h3>")
+            return HTMLResponse("<h3>Abstract mode (DOI) detected — feature available separately.</h3>")
 
     except Exception as e:
         return HTMLResponse(f"<h3>Internal Error:<br>{e}</h3>")
