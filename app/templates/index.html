@@ -5,10 +5,10 @@
 <title>🌐 TAAA Semantic–Co-Word Analyzer</title>
 <style>
 body {
-  font-family: 'Segoe UI', 'Noto Sans TC', sans-serif;
-  background: #fafafa;
+  font-family: 'Segoe UI','Noto Sans TC',sans-serif;
+  background: #f6f7fb;
   text-align: center;
-  margin: 50px;
+  margin: 40px;
 }
 .container {
   background: #fff;
@@ -16,13 +16,14 @@ body {
   border-radius: 14px;
   box-shadow: 0 2px 10px rgba(0,0,0,0.1);
   display: inline-block;
-  width: 580px;
+  width: 520px;
 }
 h1 { margin-top: 0; color: #2a2a2a; }
-h3 { color: #555; font-weight: 400; margin-top: -5px; }
+h2 { color: #555; font-weight: 400; margin-top: -5px; }
+label { font-weight: bold; }
 button {
   margin-top: 15px;
-  background: #0066cc;
+  background: #0078d4;
   color: white;
   border: none;
   padding: 10px 24px;
@@ -30,228 +31,105 @@ button {
   cursor: pointer;
   font-size: 15px;
 }
-button:hover { background: #004a99; }
-.spinner {
-  display: none;
-  margin-top: 20px;
-  font-style: italic;
-  color: #666;
-}
-footer {
-  margin-top: 30px;
-  font-size: 13px;
-  color: #888;
-}
-a.sample-btn {
-  display: inline-block;
-  margin: 6px;
-  padding: 8px 16px;
-  background: #f0f0f0;
-  color: #333;
-  border-radius: 8px;
-  text-decoration: none;
-  font-size: 14px;
-}
-a.sample-btn:hover { background: #e0e0e0; }
-#previewTable {
-  display: none;
-  margin-top: 20px;
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 13px;
-}
-#previewTable th, #previewTable td {
-  border: 1px solid #ddd;
-  padding: 4px 6px;
-}
-#previewTable th {
-  background: #f5f5f5;
-  font-weight: bold;
-}
-#modeLabel {
-  display: none;
-  margin-top: 10px;
-  font-weight: bold;
-  font-size: 15px;
-  transition: opacity 0.8s ease-in-out;
-}
-#modeHint {
-  display: none;
-  margin-top: 4px;
-  font-size: 13px;
-  color: #777;
-  font-style: italic;
-}
+button:hover { background: #005999; }
+select, input[type=file] { margin-top: 10px; }
+.spinner { display: none; margin-top: 20px; font-style: italic; color: #666; }
+.indicator { margin-top: 10px; font-size: 15px; font-weight: 600; }
+footer { margin-top: 25px; font-size: 13px; color: #888; }
+table { border-collapse: collapse; margin: 15px auto; font-size: 13px; }
+td,th { border: 1px solid #ccc; padding: 4px 8px; }
+#modeSummary { font-size: 13px; color: #777; margin-top: 5px; }
 
-/* 💚 Blink animation for Abstract mode */
-.blink-green { animation: blinkGreen 1s infinite; }
-@keyframes blinkGreen {
-  0% { color: #2a7; text-shadow: 0 0 5px #3fa; opacity: 1; }
-  50% { color: #5f5; text-shadow: 0 0 10px #7f7; opacity: 0.4; }
-  100% { color: #2a7; text-shadow: 0 0 5px #3fa; opacity: 1; }
+/* blinking mode colors */
+.blink-green {
+  animation: blinkGreen 1s linear infinite;
+  color: green;
 }
-
-/* 💙 Blink animation for Co-Word mode */
-.blink-blue { animation: blinkBlue 1s infinite; }
-@keyframes blinkBlue {
-  0% { color: #07c; text-shadow: 0 0 5px #3af; opacity: 1; }
-  50% { color: #4bf; text-shadow: 0 0 10px #7df; opacity: 0.4; }
-  100% { color: #07c; text-shadow: 0 0 5px #3af; opacity: 1; }
+.blink-blue {
+  animation: blinkBlue 1s linear infinite;
+  color: #0078d4;
 }
-
-#resultDownloads {
-  display: none;
-  margin-top: 25px;
-}
-#resultDownloads h4 {
-  color: #333;
-  font-size: 14px;
-}
+@keyframes blinkGreen {50%{opacity:0.5;}}
+@keyframes blinkBlue {50%{opacity:0.5;}}
 </style>
 </head>
 <body>
 <div class="container">
-  <h1 id="title">🌐 TAAA Semantic–Co-Word Analyzer</h1>
-  <h3 id="subtitle">Auto-detects abstract vs co-word data · multilingual friendly</h3>
+  <h1>🌐 TAAA Semantic–Co-Word Analyzer</h1>
+  <h2>Multilingual Semantic Network & TAAA Theme Assignment Tool</h2>
 
-  <!-- Upload Form -->
   <form id="uploadForm" enctype="multipart/form-data">
     <input type="file" id="file" name="file" accept=".csv" required><br>
-    <button type="submit" id="analyzeBtn">🚀 Analyze</button>
+    <button type="submit">🚀 Analyze</button>
   </form>
 
-  <!-- Preview & Mode -->
-  <div id="previewContainer">
-    <h4 id="previewTitle" style="display:none;">📄 Preview / 預覽</h4>
-    <table id="previewTable"></table>
-    <div id="modeLabel"></div>
-    <div id="modeHint"></div>
-  </div>
+  <div class="spinner" id="spinner">⏳ Analyzing… / 分析中…</div>
+  <div class="indicator" id="engineIndicator">🔍 Waiting for file...</div>
+  <div id="modeSummary"></div>
+  <div id="preview"></div>
+  <div id="resultLink"></div>
 
-  <!-- Spinner -->
-  <div class="spinner" id="spinner">⏳ Analyzing / 分析中…</div>
+  <h3>📂 Sample Datasets / 範例資料集</h3>
+  <p>You can try these demo files to explore both modes:</p>
+  <a href="/static/abstract_sample.csv" download>🧠 Download Abstract Sample</a><br>
+  <a href="/static/coword_sample.csv" download>🐾 Download Co-Word Sample</a><br>
+  <a href="/static/readme_dataset_info.csv" download>📘 Download Dataset Info</a>
 
-  <!-- 📂 Reference Dataset Downloads -->
-  <div style="margin-top:25px;">
-    <h4>📘 Reference Datasets / 範例資料下載</h4>
-    <a href="/static/abstract_sample.csv" class="sample-btn" download>🧠 Abstract Sample (1-column)</a>
-    <a href="/static/coword_sample.csv" class="sample-btn" download>🐾 Co-Word Sample (multi-column)</a>
-    <a href="/static/readme_dataset_information.txt" class="sample-btn" download>📄 Readme Dataset Info</a>
-  </div>
-
-  <!-- 📊 Result Downloads (after analysis) -->
-  <div id="resultDownloads">
-    <h4>📤 Analysis Outputs / 分析結果下載</h4>
-    <a href="/static/output_vertices.csv" class="sample-btn" download>🔹 Vertices (Top 20 Terms)</a>
-    <a href="/static/output_relations.csv" class="sample-btn" download>🔸 Relations (Edge Pairs)</a>
-    <a href="/static/output_themes.csv" class="sample-btn" download>🧩 Themes (1st Column Variable)</a>
-  </div>
-
-  <footer id="footer">
-    © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v8.0
+  <footer>
+    Try Abstract Mode (1 column) or Co-Word Mode (multi-column)<br>
+    © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v10.0
   </footer>
 </div>
 
 <script>
 const form = document.getElementById('uploadForm');
-const spinner = document.getElementById('spinner');
 const fileInput = document.getElementById('file');
-const previewTable = document.getElementById('previewTable');
-const previewTitle = document.getElementById('previewTitle');
-const modeLabel = document.getElementById('modeLabel');
-const modeHint = document.getElementById('modeHint');
-const analyzeBtn = document.getElementById('analyzeBtn');
-const footer = document.getElementById('footer');
-const resultDownloads = document.getElementById('resultDownloads');
+const spinner = document.getElementById('spinner');
+const indicator = document.getElementById('engineIndicator');
+const modeSummary = document.getElementById('modeSummary');
+const previewDiv = document.getElementById('preview');
+const resultLink = document.getElementById('resultLink');
 
-let isZh = navigator.language.startsWith('zh');
-if (isZh) {
-  document.getElementById('title').textContent = "🌐 TAAA 語義–共詞分析器";
-  document.getElementById('subtitle').textContent = "自動判斷摘要或共詞資料 · 支援多語系";
-  analyzeBtn.textContent = "🚀 開始分析";
-  spinner.textContent = "⏳ 分析中…請稍候";
-  footer.innerHTML = "© 2025 Smile Chien · TAAA 語義–共詞分析器 v8.0";
-}
+fileInput.addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  const rows = text.split(/\r?\n/).slice(0,6).map(r=>r.split(','));
+  if (rows.length <= 1) return;
 
-let currentMode = null;
+  let html = "<table><tr>" + rows[0].map(c=>`<th>${c}</th>`).join('') + "</tr>";
+  for(let i=1;i<rows.length;i++)
+    html += "<tr>" + rows[i].map(c=>`<td>${c}</td>`).join('') + "</tr>";
+  html += "</table>";
+  previewDiv.innerHTML = html;
 
-// 📋 CSV Preview + Auto Mode Detection
-fileInput.addEventListener('change', (event) => {
-  resultDownloads.style.display = 'none'; // hide old outputs
-  const file = event.target.files[0];
-  if (!file) {
-    previewTable.style.display = 'none';
-    previewTitle.style.display = 'none';
-    modeLabel.style.display = 'none';
-    modeHint.style.display = 'none';
-    return;
+  const mode = rows[0].length === 1 ? 'abstract' : 'coword';
+  if (mode === 'abstract') {
+    indicator.textContent = "🧠 Detected Abstract Mode";
+    indicator.className = "indicator blink-green";
+    modeSummary.textContent = "Detected single-column file → will use abstract analysis / 偵測到單欄摘要模式";
+  } else {
+    indicator.textContent = "🐾 Detected Co-Word Mode";
+    indicator.className = "indicator blink-blue";
+    modeSummary.textContent = "Detected multi-column file → will use co-word analysis / 偵測到多欄共詞模式";
   }
-
-  const reader = new FileReader();
-  reader.onload = function(e) {
-    const text = e.target.result;
-    const rows = text.split(/\r?\n/).filter(r => r.trim().length > 0);
-    const data = rows.slice(0, 6).map(r => r.split(/,|;|\t/));
-    if (data.length === 0) return;
-
-    let html = '<tr>' + data[0].map(h => `<th>${h}</th>`).join('') + '</tr>';
-    for (let i = 1; i < Math.min(6, data.length); i++) {
-      html += '<tr>' + data[i].map(c => `<td>${c}</td>`).join('') + '</tr>';
-    }
-    previewTable.innerHTML = html;
-    previewTable.style.display = 'table';
-    previewTitle.style.display = 'block';
-
-    const colCount = data[0].length;
-    let modeText, hintText;
-    if (colCount <= 1) {
-      modeText = isZh ? "🧠 偵測模式：摘要模式" : "🧠 Detected: Abstract Mode";
-      hintText = isZh ? "偵測到單欄檔案 → 將使用摘要分析" : "Detected single-column file → using abstract analysis";
-      modeLabel.style.color = "#2a7";
-      currentMode = "abstract";
-    } else {
-      modeText = isZh ? "🐾 偵測模式：共詞模式" : "🐾 Detected: Co-Word Mode";
-      hintText = isZh ? "偵測到多欄檔案 → 將使用共詞分析" : "Detected multi-column file → using co-word analysis";
-      modeLabel.style.color = "#07c";
-      currentMode = "coword";
-    }
-    modeLabel.textContent = modeText;
-    modeHint.textContent = hintText;
-    modeLabel.style.display = 'block';
-    modeHint.style.display = 'block';
-    modeLabel.classList.remove('blink-green', 'blink-blue');
-  };
-  reader.onerror = () => alert('❌ Unable to read file (check encoding)');
-  reader.readAsText(file, 'utf-8');
 });
 
-// 🚀 Handle submission + animate + show result downloads
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
+  const file = fileInput.files[0];
+  if (!file) return;
   spinner.style.display = 'block';
-  modeLabel.classList.remove('blink-green', 'blink-blue');
-  if (currentMode === "abstract") {
-    modeLabel.classList.add('blink-green');
-  } else if (currentMode === "coword") {
-    modeLabel.classList.add('blink-blue');
-  }
-
+  resultLink.innerHTML = '';
   const data = new FormData();
-  data.append('file', fileInput.files[0]);
+  data.append('file', file);
   try {
     const response = await fetch('/analyze_csv', { method: 'POST', body: data });
     const html = await response.text();
-
-    // Simulate showing result downloads (if generated files exist)
-    resultDownloads.style.display = 'block';
-
-    document.open();
-    document.write(html);
-    document.close();
+    document.open(); document.write(html); document.close();
   } catch {
-    alert(isZh ? '❌ 上傳失敗' : '❌ Upload failed');
     spinner.style.display = 'none';
-    modeLabel.classList.remove('blink-green', 'blink-blue');
+    indicator.textContent = '❌ Error during analysis.';
   }
 });
 </script>
