@@ -1,3 +1,9 @@
+# ==========================================================
+# main.py — TAAA Co-Word / Abstract Analyzer
+# Version: v13.0  (GPT Store Ready)
+# Author: Smile (Tsair-Wei Chien inspired)
+# ==========================================================
+
 from fastapi import FastAPI, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -8,186 +14,233 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import plotly.express as px
 from itertools import combinations
-import chardet, io, traceback
+import chardet, io, traceback, unicodedata
 
+# ---------- Initialize FastAPI ----------
 app = FastAPI()
 BASE_DIR = Path(__file__).resolve().parent
-TEMPLATE_FILE = BASE_DIR / "templates" / "index.html"
-RESULTS_DIR = Path("/tmp")
-app.mount("/static", StaticFiles(directory=RESULTS_DIR), name="static")
+STATIC_DIR = BASE_DIR / "static"
+RESULTS_DIR = STATIC_DIR
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# ---------- Helper: robust CSV reader ----------
+
+# ---------- Robust CSV Reader ----------
 def smart_read_csv(file: UploadFile) -> pd.DataFrame:
     raw = file.file.read()
     guess = chardet.detect(raw)
-    enc = guess["encoding"] or "utf-8-sig"
+    enc = guess["encoding"] or "utf-8"
     try:
-        df = pd.read_csv(io.BytesIO(raw), encoding=enc, on_bad_lines="skip")
+        df = pd.read_csv(io.BytesIO(raw), encoding=enc)
     except Exception:
-        df = pd.read_csv(io.BytesIO(raw), encoding="utf-8-sig", on_bad_lines="skip")
+        try:
+            df = pd.read_csv(io.BytesIO(raw), encoding="utf-8", on_bad_lines="skip")
+        except Exception:
+            df = pd.read_csv(io.BytesIO(raw), encoding="latin1", on_bad_lines="skip")
     return df.fillna("")
 
-# ---------- Route: home ----------
+
+# ---------- Text Cleaner ----------
+def clean_text(s):
+    if not isinstance(s, str):
+        return ""
+    try:
+        s = unicodedata.normalize("NFKC", s)
+        s = s.encode("utf-8", "ignore").decode("utf-8", "ignore")
+    except Exception:
+        pass
+    return s.strip()
+
+
+# ---------- Home ----------
 @app.get("/", response_class=HTMLResponse)
 async def home():
-    if TEMPLATE_FILE.exists():
-        html = TEMPLATE_FILE.read_text(encoding="utf-8")
-        return HTMLResponse(html)
-    else:
-        return HTMLResponse("<h3>Missing index.html template.</h3>")
+    html = (BASE_DIR / "templates" / "index.html").read_text(encoding="utf-8")
+    return HTMLResponse(html)
 
-# ---------- Route: analyze ----------
+
+# ---------- Analyzer ----------
 @app.post("/analyze_csv", response_class=HTMLResponse)
 async def analyze_csv(file: UploadFile = None):
     try:
-        if not file or not hasattr(file, "file"):
-            return HTMLResponse("<h3>❌ No file uploaded.</h3>")
-
         df = smart_read_csv(file)
         if df.empty:
             return HTMLResponse("<h3>❌ Uploaded file is empty or unreadable.</h3>")
 
         mode = "abstract" if df.shape[1] == 1 else "coword"
-        terms = []
-        header_note = ""
-        vertex_count, relation_count = 0, 0
 
+        # =====================================================
+        # 🧩 STEP 1. Generate terms & themes
+        # =====================================================
+        terms = []
         if mode == "abstract":
-            header_note = "📘 Abstract mode: single-column text detected → keyword frequency analysis performed."
             for i, text in enumerate(df.iloc[:, 0].astype(str)):
-                terms.append({"term": f"Theme_{i%5+1}", "freq": len(text.split())})
+                for w in text.replace("、", ",").replace("，", ",").split(","):
+                    if w.strip():
+                        terms.append({"term": clean_text(w.strip()), "freq": 1})
         else:
-            header_note = "📗 Auto mode: Text-only CSV detected → pairwise relations generated."
             for col in df.columns:
                 for val in df[col]:
                     if isinstance(val, str) and val.strip():
-                        terms.append({"term": val.strip(), "freq": 1})
+                        terms.append({"term": clean_text(val), "freq": 1})
 
-            # --- Build co-occurrence edges ---
-            pairs = []
-            for _, row in df.iterrows():
-                words = [w.strip() for w in row if isinstance(w, str) and w.strip()]
-                for a, b in combinations(sorted(set(words)), 2):
-                    pairs.append(tuple(sorted((a, b))))
-            if pairs:
-                rel = pd.Series(pairs).value_counts().reset_index()
-                rel.columns = ["pair", "weight"]
-                rel[["source", "target"]] = pd.DataFrame(rel["pair"].tolist(), index=rel.index)
-                relations = rel[["source", "target", "weight"]]
-            else:
-                relations = pd.DataFrame(columns=["source", "target", "weight"])
-            relations.to_csv(RESULTS_DIR / "relations.csv", index=False, encoding="utf-8-sig")
-            relation_count = len(relations)
-
-        if not terms:
-            return HTMLResponse("<h3>❌ No valid terms detected in your CSV.</h3>")
-
-        # ---------- Theme frequency summary ----------
         themes = pd.DataFrame(terms)
         theme_counts = (
             themes.groupby("term")["freq"].sum().reset_index().sort_values("freq", ascending=False)
         )
-        theme_counts["freq"] = pd.to_numeric(theme_counts["freq"], errors="coerce").fillna(0)
-        theme_counts = theme_counts[theme_counts["term"].astype(str).str.strip() != ""]
-        if theme_counts.empty:
-            return HTMLResponse("<h3>❌ No valid text terms found in your CSV.</h3>")
+        theme_counts.to_csv(RESULTS_DIR / "themes.csv", index=False, encoding="utf-8-sig")
 
-        tfile = RESULTS_DIR / "themes.csv"
-        theme_counts.to_csv(tfile, index=False, encoding="utf-8-sig")
+        # =====================================================
+        # 🧩 STEP 2. Build Vertices / Relations
+        # =====================================================
+        all_terms = pd.unique(df.values.ravel())
+        all_terms = [clean_text(t) for t in all_terms if isinstance(t, str) and t.strip()]
+        vertices = pd.DataFrame(sorted(set(all_terms)), columns=["name"])
 
-        # ---------- H-theme distribution ----------
-        theme_counts = theme_counts.sort_values("freq", ascending=False).reset_index(drop=True)
-        theme_counts["rank"] = theme_counts.index + 1
+        # frequency per term
+        term_counts = themes.groupby("term")["freq"].sum().reset_index()
+        term_counts.columns = ["name", "value"]
+
+        # build co-occurrence edges (for coword mode)
+        pairs = []
+        if mode == "coword":
+            for _, row in df.iterrows():
+                words = [clean_text(w) for w in row if isinstance(w, str) and w.strip()]
+                for a, b in combinations(sorted(set(words)), 2):
+                    pairs.append(tuple(sorted((a, b))))
+        if pairs:
+            rel = pd.Series(pairs).value_counts().reset_index()
+            rel.columns = ["pair", "weight"]
+            rel[["source", "target"]] = pd.DataFrame(rel["pair"].tolist(), index=rel.index)
+            relations = rel[["source", "target", "weight"]]
+        else:
+            relations = pd.DataFrame(columns=["source", "target", "weight"])
+        relations.to_csv(RESULTS_DIR / "relations.csv", index=False, encoding="utf-8-sig")
+
+        # compute total edges per vertex
+        if not relations.empty:
+            edge_counts = pd.concat([
+                relations["source"].value_counts(),
+                relations["target"].value_counts()
+            ], axis=1).fillna(0).sum(axis=1).astype(int).reset_index()
+            edge_counts.columns = ["name", "value2"]
+        else:
+            edge_counts = pd.DataFrame(columns=["name", "value2"])
+
+        # merge attributes
+        vertices = vertices.merge(term_counts, on="name", how="left")
+        vertices = vertices.merge(edge_counts, on="name", how="left").fillna(0)
+
+        # temporary pseudo cluster IDs
+        vertices["carac"] = (vertices.index % 9) + 1
+        vertices["name"] = vertices["name"].apply(clean_text)
+
+        # =====================================================
+        # 🧩 STEP 3. Cluster Representatives & Legend
+        # =====================================================
+        cluster_representatives = (
+            vertices.sort_values("value", ascending=False)
+            .groupby("carac").first()["name"].to_dict()
+        )
+        vertices["carac_label"] = vertices["carac"].map(cluster_representatives)
+
+        cluster_summary = (
+            vertices.sort_values(["carac", "value"], ascending=[True, False])
+            .groupby("carac")
+            .agg(
+                cluster_label=("name", "first"),
+                member_terms=("name", lambda x: ", ".join(x))
+            ).reset_index()
+        )
+        cluster_summary.to_csv(RESULTS_DIR / "clusters.csv", index=False, encoding="utf-8-sig")
+
+        # =====================================================
+        # 🧩 STEP 4. H-Theme Bar Chart
+        # =====================================================
+        theme_counts["rank"] = range(1, len(theme_counts) + 1)
         h_theme = theme_counts[theme_counts["freq"] >= theme_counts["rank"]]
         h_value = len(h_theme) if len(h_theme) > 0 else 1
-        topH = theme_counts.head(h_value)
-        top20 = theme_counts.head(20)
 
-        # ---------- Build Vertices (name, value, value2, carac) ----------
-        if mode == "coword":
-            all_terms = pd.unique(df.values.ravel())
-            all_terms = [t.strip() for t in all_terms if isinstance(t, str) and t.strip()]
-            vertices = pd.DataFrame(sorted(set(all_terms)), columns=["name"])
-
-            # value: frequency
-            term_counts = themes.groupby("term")["freq"].sum().reset_index()
-            term_counts.columns = ["name", "value"]
-
-            # value2: total edges connected
-            if not relations.empty:
-                edge_counts = pd.concat([
-                    relations["source"].value_counts(),
-                    relations["target"].value_counts()
-                ], axis=1).fillna(0).sum(axis=1).astype(int).reset_index()
-                edge_counts.columns = ["name", "value2"]
-            else:
-                edge_counts = pd.DataFrame(columns=["name", "value2"])
-
-            vertices = vertices.merge(term_counts, on="name", how="left")
-            vertices = vertices.merge(edge_counts, on="name", how="left").fillna(0)
-            vertices["carac"] = (vertices.index % max(1, h_value)) + 1
-            vertices.to_csv(RESULTS_DIR / "vertices.csv", index=False, encoding="utf-8-sig")
-            vertex_count = len(vertices)
-
-        # ---------- Bar chart ----------
         plt.figure(figsize=(8, 5))
-        plt.barh(topH["term"][::-1], topH["freq"][::-1], color="#007ACC")
-        plt.xlabel("Frequency", color="black")
-        plt.ylabel("Term", color="black")
-        plt.title(f"Top H-Theme Distribution (H = {h_value})", color="black")
+        plt.barh(h_theme["term"][::-1], h_theme["freq"][::-1], color="#007ACC")
+        plt.xlabel("Frequency", color="black", fontsize=11)
+        plt.ylabel("Term", color="black", fontsize=11)
+        plt.title(f"Top H-Theme Distribution (H = {h_value})", color="black", fontsize=14)
         plt.tight_layout()
         plt.savefig(RESULTS_DIR / "theme_bar.png", bbox_inches="tight")
         plt.close()
 
-        # ---------- Scatter: using vertices ----------
-        if mode == "coword":
-            fig = px.scatter(
-                vertices,
-                x="value",
-                y="value2",
-                size="value",
-                color="carac",
-                hover_name="name",
-                color_continuous_scale="RdYlBu",
-                title=f"Theme Scatter (H = {h_value}, n = {vertex_count})"
-            )
-            fig.update_traces(
-                text=vertices["name"].apply(lambda x: "#" + x),
-                textposition="top center",
-                textfont=dict(color="red", size=12),
-                marker=dict(line=dict(width=1, color="black"))
-            )
-            fig.update_layout(
-                font=dict(color="black"),
-                xaxis_title="Term Frequency (value)",
-                yaxis_title="Total Edges (value2)",
-                title_font=dict(color="black", size=18),
-                coloraxis_colorbar=dict(title="Cluster (carac)"),
-                plot_bgcolor="rgba(240,240,240,0.8)"
-            )
-            fig.add_annotation(
-                text=f"H-theme count: {h_value} clusters",
-                xref="paper", yref="paper",
-                x=0.02, y=1.08, showarrow=False,
-                font=dict(color="black", size=14)
-            )
-            fig.write_html(RESULTS_DIR / "theme_scatter.html", include_plotlyjs="cdn")
+        # =====================================================
+        # 🧩 STEP 5. Scatter (Top 20)
+        # =====================================================
+        top20 = vertices.sort_values("value", ascending=False).head(20)
+        fig = px.scatter(
+            top20,
+            x="value", y="value2",
+            size="value", color="carac",
+            hover_name="name",
+            color_continuous_scale="RdYlBu",
+            title=f"Theme Scatter (Top 20 Terms, H={h_value})"
+        )
+        fig.update_traces(
+            text=top20["name"].apply(lambda x: "#" + x),
+            textposition="top center",
+            textfont=dict(color="red", size=12),
+            marker=dict(line=dict(width=1, color="black"))
+        )
+        fig.update_layout(
+            font=dict(color="black"),
+            xaxis_title="Term Frequency (value)",
+            yaxis_title="Total Edges (value2)",
+            plot_bgcolor="rgba(240,240,240,0.8)"
+        )
+        fig.write_html(RESULTS_DIR / "theme_scatter.html", include_plotlyjs="cdn")
 
-        # ---------- Final HTML ----------
-        extra_summary = ""
-        if mode == "coword":
-            extra_summary = f"<p>Detected <b>{vertex_count}</b> vertices and <b>{relation_count}</b> unique relations.</p>"
+        # =====================================================
+        # 🧩 STEP 6. TAAA for Abstract Mode
+        # =====================================================
+        if mode == "abstract":
+            term_to_cluster = dict(zip(vertices["name"], vertices["carac"]))
+            records = []
+            for idx, text in enumerate(df.iloc[:, 0].astype(str), start=1):
+                terms = [t.strip() for t in text.replace("、", ",").replace("，", ",").split(",") if t.strip()]
+                clusters = [term_to_cluster.get(t, None) for t in terms if t in term_to_cluster]
+                clusters = [c for c in clusters if c is not None]
+                if not clusters:
+                    assigned_cluster = None
+                    assigned_label = "Unclassified"
+                else:
+                    s = pd.Series(clusters).value_counts()
+                    topfreq = s.max()
+                    tied = s[s == topfreq].index.tolist()
+                    assigned_cluster = min(map(int, tied))
+                    assigned_label = cluster_representatives.get(assigned_cluster, f"Theme_{assigned_cluster}")
+                records.append({
+                    "article_id": idx,
+                    "abstract": text[:200] + ("..." if len(text) > 200 else ""),
+                    "assigned_theme": assigned_cluster,
+                    "theme_label": assigned_label
+                })
+            pd.DataFrame(records).to_csv(RESULTS_DIR / "article_theme_assign.csv", index=False, encoding="utf-8-sig")
 
+        # =====================================================
+        # 🧩 STEP 7. Save Vertices
+        # =====================================================
+        vertices.to_csv(RESULTS_DIR / "vertices.csv", index=False, encoding="utf-8-sig")
+
+        # =====================================================
+        # 🧩 STEP 8. HTML Output
+        # =====================================================
+        article_link = "<li>🧬 <a href='/static/article_theme_assign.csv' target='_blank'>Article–Theme Assignment (CSV)</a></li>" if mode == "abstract" else ""
         return HTMLResponse(f"""
         <html><body style='font-family:Segoe UI, Noto Sans TC'>
         <h2>✅ Analysis Complete</h2>
-        <h4 style='color:#007ACC'>{header_note}</h4>
-        <p>Detected {len(theme_counts)} unique terms.</p>
-        {extra_summary}
+        <p>Mode detected: <b>{mode.upper()}</b> — Auto theme classification finished.</p>
         <ul>
             <li>🧩 <a href='/static/themes.csv' target='_blank'>Themes (CSV)</a></li>
+            <li>🧭 <a href='/static/clusters.csv' target='_blank'>Clusters (CSV)</a></li>
             <li>🧠 <a href='/static/vertices.csv' target='_blank'>Vertices (CSV)</a></li>
             <li>🔗 <a href='/static/relations.csv' target='_blank'>Relations (CSV)</a></li>
+            {article_link}
             <li>📊 <a href='/static/theme_bar.png' target='_blank'>Theme Bar (PNG)</a></li>
             <li>🌈 <a href='/static/theme_scatter.html' target='_blank'>Theme Scatter (Interactive)</a></li>
         </ul>
@@ -200,5 +253,4 @@ async def analyze_csv(file: UploadFile = None):
         """)
     except Exception:
         err = traceback.format_exc()
-        print("⚠️ Error Traceback:\n", err)
         return HTMLResponse(f"<h3>❌ Internal Error:</h3><pre>{err}</pre>")
