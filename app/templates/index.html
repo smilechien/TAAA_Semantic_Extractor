@@ -1,78 +1,145 @@
 <!DOCTYPE html>
-<html lang="zh-Hant">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TAAA Semantic Analyzer</title>
   <style>
-    body { font-family: 'Segoe UI','Noto Sans TC',sans-serif; background:#f9fafc; margin:40px; color:#222; }
-    h1 { color:#007ACC; }
-    .upload-box { background:#fff; border:2px dashed #007ACC; border-radius:12px; padding:30px; text-align:center; }
-    #preview { margin-top:20px; background:#fff; border:1px solid #ccc; border-radius:10px; padding:10px; display:none; overflow-x:auto; }
-    table { border-collapse:collapse; width:100%; margin-top:5px; }
-    th,td { border:1px solid #ddd; padding:6px; text-align:left; }
-    th { background:#007ACC; color:white; }
-    #status { margin-top:20px; font-size:15px; color:#007ACC; display:none; }
-    #spinner { display:inline-block; width:18px; height:18px; border:3px solid #007ACC; border-top:3px solid transparent; border-radius:50%; animation:spin 1s linear infinite; margin-right:8px; vertical-align:middle; }
-    @keyframes spin { from {transform:rotate(0);} to {transform:rotate(360deg);} }
-    button { background:#007ACC; color:white; padding:10px 20px; border:none; border-radius:6px; cursor:pointer; font-size:15px; }
-    button:hover { background:#005c9a; }
+    body {
+      font-family: 'Segoe UI', 'Noto Sans TC', sans-serif;
+      background-color: #f9fafc;
+      margin: 40px;
+      color: #222;
+    }
+    h1 { color: #007ACC; }
+    h2 { margin-top: 25px; color: #444; }
+    .upload-box {
+      background: #fff;
+      border: 2px dashed #007ACC;
+      border-radius: 12px;
+      padding: 30px;
+      text-align: center;
+    }
+    button {
+      background: #007ACC;
+      color: white;
+      padding: 10px 20px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 15px;
+    }
+    button:hover { background: #005c9a; }
+    #preview {
+      margin-top: 25px;
+      background: #fff;
+      border: 1px solid #ccc;
+      border-radius: 10px;
+      padding: 10px;
+      overflow-x: auto;
+      display: none;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 5px;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 6px;
+      text-align: left;
+      white-space: nowrap;
+    }
+    th { background: #007ACC; color: white; }
+    #status {
+      margin-top: 20px;
+      font-size: 15px;
+      color: #007ACC;
+      display: none;
+    }
+    #spinner {
+      display: inline-block;
+      width: 18px;
+      height: 18px;
+      border: 3px solid #007ACC;
+      border-top: 3px solid transparent;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+      vertical-align: middle;
+      margin-right: 8px;
+    }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .mode-info {
+      margin-top: 10px;
+      padding: 10px;
+      background: #e7f3ff;
+      border-left: 5px solid #007ACC;
+      border-radius: 5px;
+      display: none;
+    }
   </style>
 </head>
 <body>
-  <h1>📊 Co-Word Theme Analyzer (TAAA)</h1>
-  <p>Upload a text-only CSV (each cell = keyword or phrase).  
-     The app auto-detects co-occurrences, computes H-theme distribution,  
-     and generates 5 downloadable outputs.</p>
+  <h1>📊 TAAA Co-Word / Abstract Analyzer</h1>
+  <p>Upload a UTF-8 CSV file — the system automatically detects <b>Abstract</b> or <b>Co-Word</b> mode,
+     previews the first 5 rows, and performs semantic theme analysis.</p>
 
   <div class="upload-box">
     <form id="uploadForm" enctype="multipart/form-data" method="post" action="/analyze_csv">
       <input type="file" name="file" id="fileInput" accept=".csv" required><br><br>
-      <button type="submit">🚀 Analyze</button>
+      <button type="submit">🚀 Analyze CSV</button>
     </form>
   </div>
 
+  <div id="mode" class="mode-info"></div>
   <div id="preview">
-    <h3>📋 預覽前 5 筆資料 (Preview Top 5 Rows)</h3>
+    <h3>📋 Preview of Uploaded CSV (Top 5 Rows)</h3>
     <div id="tableContainer"></div>
   </div>
 
-  <div id="status"><div id="spinner"></div> 分析中...請稍候 (Analyzing... Please wait)</div>
+  <div id="status">
+    <div id="spinner"></div> Analyzing data... please wait.
+  </div>
 
   <script>
-    // ---------- UTF-8 safe CSV preview ----------
-    document.getElementById('fileInput').addEventListener('change', function(evt) {
+    // ========== Preview + Mode Detection ==========
+    document.getElementById('fileInput').addEventListener('change', function (evt) {
       const file = evt.target.files[0];
       if (!file) return;
       const reader = new FileReader();
-
-      // ✅ read as ArrayBuffer then decode properly
-      reader.onload = function(e) {
-        const decoder = new TextDecoder('utf-8');
-        let text = decoder.decode(e.target.result);
-        // fallback Big5 decoding if Chinese looks broken
-        if (text.includes(" ")) {
-          try { text = new TextDecoder('big5').decode(e.target.result); } catch {}
-        }
-
-        const rows = text.split(/\r?\n/).slice(0, 6);
+      reader.onload = function (e) {
+        const text = e.target.result;
+        const rows = text.split(/\r?\n/).filter(r => r.trim()).slice(0, 6);
         const data = rows.map(r => r.split(','));
+        if (data.length === 0) return;
+
+        // Detect mode: single column => abstract; multiple => coword
+        const header = data[0];
+        const mode = header.length === 1 ? 'abstract' : 'coword';
+        const modeBox = document.getElementById('mode');
+        if (mode === 'abstract') {
+          modeBox.innerHTML = "🧬 Detected <b>Abstract Mode</b> → Theme assignment will be generated (TAAA).";
+        } else {
+          modeBox.innerHTML = "🔗 Detected <b>Co-Word Mode</b> → Network & Cluster visualization enabled.";
+        }
+        modeBox.style.display = "block";
+
+        // Render table preview
         let html = '<table><thead><tr>';
-        html += data[0].map(h => `<th>${h}</th>`).join('');
+        html += header.map(h => `<th>${h}</th>`).join('');
         html += '</tr></thead><tbody>';
         for (let i = 1; i < data.length; i++) {
-          if (!data[i].join('').trim()) continue;
           html += '<tr>' + data[i].map(c => `<td>${c}</td>`).join('') + '</tr>';
         }
         html += '</tbody></table>';
         document.getElementById('tableContainer').innerHTML = html;
         document.getElementById('preview').style.display = 'block';
       };
-      reader.readAsArrayBuffer(file);
+      reader.readAsText(file, 'UTF-8');
     });
 
-    // ---------- Show spinner on submit ----------
-    document.getElementById('uploadForm').addEventListener('submit', function() {
+    // ========== Show Spinner ==========
+    document.getElementById('uploadForm').addEventListener('submit', function () {
       document.getElementById('status').style.display = 'block';
     });
   </script>
