@@ -1,3 +1,8 @@
+# ============================================================
+# 🧠 TAAA Semantic–Co-Word Analyzer (v17.0)
+# Author: Smile Chien · 2025
+# ============================================================
+
 import os, io, re, json, requests
 import pandas as pd
 import matplotlib
@@ -10,7 +15,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-# ========== CONFIG ==========
+# ============================================================
+# ⚙️ CONFIG
+# ============================================================
 app = FastAPI()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
@@ -19,8 +26,11 @@ os.makedirs(STATIC_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 templates = Jinja2Templates(directory=TEMPLATE_DIR)
 
-# ========== HELPERS ==========
+# ============================================================
+# 🧩 HELPERS
+# ============================================================
 def safe_read_csv(upload_file: UploadFile):
+    """Try multiple encodings for CSV files."""
     content = upload_file.file.read()
     for enc in ["utf-8-sig", "utf-8", "big5", "cp950"]:
         try:
@@ -31,6 +41,7 @@ def safe_read_csv(upload_file: UploadFile):
     raise ValueError("❌ Cannot decode CSV file. Try UTF-8 or Big5 encoding.")
 
 def fetch_openalex_abstract(doi):
+    """Get abstract text from OpenAlex."""
     url = f"https://api.openalex.org/works/https://doi.org/{doi}"
     try:
         res = requests.get(url, timeout=15)
@@ -50,6 +61,7 @@ def fetch_openalex_abstract(doi):
         return None
 
 def fetch_openalex_keywords(doi):
+    """Get OpenAlex top concepts as keywords."""
     url = f"https://api.openalex.org/works/https://doi.org/{doi}"
     try:
         res = requests.get(url, timeout=15)
@@ -62,11 +74,27 @@ def fetch_openalex_keywords(doi):
     except Exception:
         return None
 
-# ========== ROUTES ==========
+def normalize_headers(df):
+    """Standardize potential source/target column names."""
+    df.columns = [c.strip().lower() for c in df.columns]
+    alias_map = {
+        "term1": "source", "node1": "source", "word1": "source", "keyword1": "source",
+        "term2": "target", "node2": "target", "word2": "target", "keyword2": "target",
+        "from": "source", "to": "target"
+    }
+    df.rename(columns={k: v for k, v in alias_map.items() if k in df.columns}, inplace=True)
+    return df
+
+# ============================================================
+# 🏠 HOME PAGE
+# ============================================================
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+# ============================================================
+# 📊 MAIN ANALYSIS
+# ============================================================
 @app.post("/analyze_csv", response_class=HTMLResponse)
 async def analyze_csv(request: Request, file: UploadFile):
     try:
@@ -74,10 +102,12 @@ async def analyze_csv(request: Request, file: UploadFile):
         df.columns = [c.strip() for c in df.columns]
         mode = "abstract" if len(df.columns) == 1 else "coword"
 
-        # ------------- ABSTRACT MODE (DOI) -------------
+        # --------------------------------------------------------
+        # 🔍 ABSTRACT MODE (DOI Extraction)
+        # --------------------------------------------------------
         if mode == "abstract":
             col = df.columns[0]
-            if not df[col].str.contains("/").any():
+            if not df[col].astype(str).str.contains("/").any():
                 return HTMLResponse("<h3>❌ No DOI format detected in file.</h3>")
 
             df["doi"] = df[col].astype(str)
@@ -88,27 +118,9 @@ async def analyze_csv(request: Request, file: UploadFile):
 
             for doi in df["doi"]:
                 text = fetch_openalex_abstract(doi)
-                if not text:
-                    abstracts.append("")
-                else:
-                    abstracts.append(text)
-
-                if use_openai:
-                    try:
-                        import openai
-                        openai.api_key = OPENAI_KEY
-                        prompt = f"Extract 10 concise key semantic phrases from this abstract:\n{text}"
-                        resp = openai.ChatCompletion.create(
-                            model="gpt-3.5-turbo",
-                            messages=[{"role": "user", "content": prompt}],
-                            max_tokens=200
-                        )
-                        kw = resp["choices"][0]["message"]["content"].strip()
-                        keywords.append(kw)
-                    except Exception:
-                        keywords.append(fetch_openalex_keywords(doi) or "")
-                else:
-                    keywords.append(fetch_openalex_keywords(doi) or "")
+                abstracts.append(text or "")
+                kw = fetch_openalex_keywords(doi) or ""
+                keywords.append(kw)
 
             df["abstract"] = abstracts
             df["keywords"] = keywords
@@ -129,34 +141,42 @@ async def analyze_csv(request: Request, file: UploadFile):
               </button>
             </div>
             <footer style="margin-top:25px;font-size:13px;color:#888;">
-              © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v16.9
+              © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v17.0
             </footer>
             """
             return HTMLResponse(html)
 
-        # ------------- CO-WORD MODE -------------
+        # --------------------------------------------------------
+        # 🔗 CO-WORD MODE
+        # --------------------------------------------------------
         if mode == "coword":
-            # example: expects columns like source,target,weight
-            edges = df.copy()
+            edges = normalize_headers(df)
+
+            # validate required columns
             if "source" not in edges.columns or "target" not in edges.columns:
-                return HTMLResponse("<h3>❌ Missing 'source' or 'target' column.</h3>")
+                cols = ", ".join(df.columns)
+                return HTMLResponse(f"<h3>❌ Missing 'source' or 'target' column.<br>"
+                                    f"Detected columns: {cols}</h3>")
 
             edges["weight"] = pd.to_numeric(edges.get("weight", 1), errors="coerce").fillna(1)
             G = nx.from_pandas_edgelist(edges, "source", "target", ["weight"])
             vertices = pd.DataFrame({"term": list(G.nodes())})
             vertices["degree"] = [val for (node, val) in G.degree()]
 
-            # Louvain clustering
+            # clustering (Louvain)
             import community
             partition = community.best_partition(G)
             vertices["cluster"] = vertices["term"].map(partition)
-            theme_counts = vertices["cluster"].value_counts()
-            theme_df = theme_counts.reset_index()
-            theme_df.columns = ["cluster", "member_count"]
+
+            theme_df = (
+                vertices["cluster"].value_counts()
+                .reset_index()
+                .rename(columns={"index": "cluster", "cluster": "member_count"})
+            )
             theme_df.to_csv(os.path.join(STATIC_DIR, "theme.csv"), index=False, encoding="utf-8-sig")
 
-            # H-theme bar
-            plt.figure(figsize=(7,5))
+            # bar chart
+            plt.figure(figsize=(7, 5))
             theme_df.sort_values("member_count", ascending=True).plot.barh(
                 x="cluster", y="member_count", legend=False)
             plt.title(f"Top H-Theme Distribution (H = {len(theme_df)})")
@@ -164,11 +184,20 @@ async def analyze_csv(request: Request, file: UploadFile):
             plt.savefig(os.path.join(STATIC_DIR, "h_theme_bar.png"), dpi=150)
             plt.close()
 
-            # scatter (categorical colors)
+            # scatter plot with red mean lines
+            mean_x = vertices["degree"].mean()
+            mean_y = vertices["degree"].mean()
             fig = px.scatter(vertices.head(20), x="degree", y="degree",
                              color=vertices["cluster"].astype(str),
-                             text="term", title="Theme Scatter (Top 20 Terms, by Category)",
+                             text="term",
+                             title="Theme Scatter (Top 20 Terms, by Category)",
                              height=600)
+            fig.add_shape(type="line", x0=mean_x, x1=mean_x,
+                          y0=vertices["degree"].min(), y1=vertices["degree"].max(),
+                          line=dict(color="red", dash="dot"))
+            fig.add_shape(type="line", x0=vertices["degree"].min(), x1=vertices["degree"].max(),
+                          y0=mean_y, y1=mean_y,
+                          line=dict(color="red", dash="dot"))
             fig.write_html(os.path.join(STATIC_DIR, "theme_scatter.html"))
 
             html = f"""
@@ -187,7 +216,7 @@ async def analyze_csv(request: Request, file: UploadFile):
               </button>
             </div>
             <footer style="margin-top:25px;font-size:13px;color:#888;">
-              © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v16.9
+              © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v17.0
             </footer>
             """
             return HTMLResponse(html)
