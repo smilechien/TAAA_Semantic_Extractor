@@ -1,137 +1,80 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-Hant">
 <head>
-<meta charset="UTF-8">
-<title>🌐 TAAA Semantic–Co-Word Analyzer</title>
-<style>
-body {
-  font-family: 'Segoe UI','Noto Sans TC',sans-serif;
-  background: #f6f7fb;
-  text-align: center;
-  margin: 40px;
-}
-.container {
-  background: #fff;
-  padding: 30px;
-  border-radius: 14px;
-  box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-  display: inline-block;
-  width: 520px;
-}
-h1 { margin-top: 0; color: #2a2a2a; }
-h2 { color: #555; font-weight: 400; margin-top: -5px; }
-label { font-weight: bold; }
-button {
-  margin-top: 15px;
-  background: #0078d4;
-  color: white;
-  border: none;
-  padding: 10px 24px;
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 15px;
-}
-button:hover { background: #005999; }
-select, input[type=file] { margin-top: 10px; }
-.spinner { display: none; margin-top: 20px; font-style: italic; color: #666; }
-.indicator { margin-top: 10px; font-size: 15px; font-weight: 600; }
-footer { margin-top: 25px; font-size: 13px; color: #888; }
-table { border-collapse: collapse; margin: 15px auto; font-size: 13px; }
-td,th { border: 1px solid #ccc; padding: 4px 8px; }
-#modeSummary { font-size: 13px; color: #777; margin-top: 5px; }
-
-/* blinking mode colors */
-.blink-green {
-  animation: blinkGreen 1s linear infinite;
-  color: green;
-}
-.blink-blue {
-  animation: blinkBlue 1s linear infinite;
-  color: #0078d4;
-}
-@keyframes blinkGreen {50%{opacity:0.5;}}
-@keyframes blinkBlue {50%{opacity:0.5;}}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TAAA Semantic Analyzer</title>
+  <style>
+    body { font-family: 'Segoe UI','Noto Sans TC',sans-serif; background:#f9fafc; margin:40px; color:#222; }
+    h1 { color:#007ACC; }
+    .upload-box { background:#fff; border:2px dashed #007ACC; border-radius:12px; padding:30px; text-align:center; }
+    #preview { margin-top:20px; background:#fff; border:1px solid #ccc; border-radius:10px; padding:10px; display:none; overflow-x:auto; }
+    table { border-collapse:collapse; width:100%; margin-top:5px; }
+    th,td { border:1px solid #ddd; padding:6px; text-align:left; }
+    th { background:#007ACC; color:white; }
+    #status { margin-top:20px; font-size:15px; color:#007ACC; display:none; }
+    #spinner { display:inline-block; width:18px; height:18px; border:3px solid #007ACC; border-top:3px solid transparent; border-radius:50%; animation:spin 1s linear infinite; margin-right:8px; vertical-align:middle; }
+    @keyframes spin { from {transform:rotate(0);} to {transform:rotate(360deg);} }
+    button { background:#007ACC; color:white; padding:10px 20px; border:none; border-radius:6px; cursor:pointer; font-size:15px; }
+    button:hover { background:#005c9a; }
+  </style>
 </head>
 <body>
-<div class="container">
-  <h1>🌐 TAAA Semantic–Co-Word Analyzer</h1>
-  <h2>Multilingual Semantic Network & TAAA Theme Assignment Tool</h2>
+  <h1>📊 Co-Word Theme Analyzer (TAAA)</h1>
+  <p>Upload a text-only CSV (each cell = keyword or phrase).  
+     The app auto-detects co-occurrences, computes H-theme distribution,  
+     and generates 5 downloadable outputs.</p>
 
-  <form id="uploadForm" enctype="multipart/form-data">
-    <input type="file" id="file" name="file" accept=".csv" required><br>
-    <button type="submit">🚀 Analyze</button>
-  </form>
+  <div class="upload-box">
+    <form id="uploadForm" enctype="multipart/form-data" method="post" action="/analyze_csv">
+      <input type="file" name="file" id="fileInput" accept=".csv" required><br><br>
+      <button type="submit">🚀 Analyze</button>
+    </form>
+  </div>
 
-  <div class="spinner" id="spinner">⏳ Analyzing… / 分析中…</div>
-  <div class="indicator" id="engineIndicator">🔍 Waiting for file...</div>
-  <div id="modeSummary"></div>
-  <div id="preview"></div>
-  <div id="resultLink"></div>
+  <div id="preview">
+    <h3>📋 預覽前 5 筆資料 (Preview Top 5 Rows)</h3>
+    <div id="tableContainer"></div>
+  </div>
 
-  <h3>📂 Sample Datasets / 範例資料集</h3>
-  <p>You can try these demo files to explore both modes:</p>
-  <a href="/static/abstract_sample.csv" download>🧠 Download Abstract Sample</a><br>
-  <a href="/static/coword_sample.csv" download>🐾 Download Co-Word Sample</a><br>
-  <a href="/static/readme_dataset_info.csv" download>📘 Download Dataset Info</a>
+  <div id="status"><div id="spinner"></div> 分析中...請稍候 (Analyzing... Please wait)</div>
 
-  <footer>
-    Try Abstract Mode (1 column) or Co-Word Mode (multi-column)<br>
-    © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v10.0
-  </footer>
-</div>
+  <script>
+    // ---------- UTF-8 safe CSV preview ----------
+    document.getElementById('fileInput').addEventListener('change', function(evt) {
+      const file = evt.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
 
-<script>
-const form = document.getElementById('uploadForm');
-const fileInput = document.getElementById('file');
-const spinner = document.getElementById('spinner');
-const indicator = document.getElementById('engineIndicator');
-const modeSummary = document.getElementById('modeSummary');
-const previewDiv = document.getElementById('preview');
-const resultLink = document.getElementById('resultLink');
+      // ✅ read as ArrayBuffer then decode properly
+      reader.onload = function(e) {
+        const decoder = new TextDecoder('utf-8');
+        let text = decoder.decode(e.target.result);
+        // fallback Big5 decoding if Chinese looks broken
+        if (text.includes(" ")) {
+          try { text = new TextDecoder('big5').decode(e.target.result); } catch {}
+        }
 
-fileInput.addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const text = await file.text();
-  const rows = text.split(/\r?\n/).slice(0,6).map(r=>r.split(','));
-  if (rows.length <= 1) return;
+        const rows = text.split(/\r?\n/).slice(0, 6);
+        const data = rows.map(r => r.split(','));
+        let html = '<table><thead><tr>';
+        html += data[0].map(h => `<th>${h}</th>`).join('');
+        html += '</tr></thead><tbody>';
+        for (let i = 1; i < data.length; i++) {
+          if (!data[i].join('').trim()) continue;
+          html += '<tr>' + data[i].map(c => `<td>${c}</td>`).join('') + '</tr>';
+        }
+        html += '</tbody></table>';
+        document.getElementById('tableContainer').innerHTML = html;
+        document.getElementById('preview').style.display = 'block';
+      };
+      reader.readAsArrayBuffer(file);
+    });
 
-  let html = "<table><tr>" + rows[0].map(c=>`<th>${c}</th>`).join('') + "</tr>";
-  for(let i=1;i<rows.length;i++)
-    html += "<tr>" + rows[i].map(c=>`<td>${c}</td>`).join('') + "</tr>";
-  html += "</table>";
-  previewDiv.innerHTML = html;
-
-  const mode = rows[0].length === 1 ? 'abstract' : 'coword';
-  if (mode === 'abstract') {
-    indicator.textContent = "🧠 Detected Abstract Mode";
-    indicator.className = "indicator blink-green";
-    modeSummary.textContent = "Detected single-column file → will use abstract analysis / 偵測到單欄摘要模式";
-  } else {
-    indicator.textContent = "🐾 Detected Co-Word Mode";
-    indicator.className = "indicator blink-blue";
-    modeSummary.textContent = "Detected multi-column file → will use co-word analysis / 偵測到多欄共詞模式";
-  }
-});
-
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const file = fileInput.files[0];
-  if (!file) return;
-  spinner.style.display = 'block';
-  resultLink.innerHTML = '';
-  const data = new FormData();
-  data.append('file', file);
-  try {
-    const response = await fetch('/analyze_csv', { method: 'POST', body: data });
-    const html = await response.text();
-    document.open(); document.write(html); document.close();
-  } catch {
-    spinner.style.display = 'none';
-    indicator.textContent = '❌ Error during analysis.';
-  }
-});
-</script>
+    // ---------- Show spinner on submit ----------
+    document.getElementById('uploadForm').addEventListener('submit', function() {
+      document.getElementById('status').style.display = 'block';
+    });
+  </script>
 </body>
 </html>
