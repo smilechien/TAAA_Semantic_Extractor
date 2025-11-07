@@ -4,10 +4,10 @@
 <meta charset="UTF-8">
 <title>🌐 TAAA Semantic–Co-Word Analyzer</title>
 <style>
-body {font-family:'Segoe UI','Noto Sans TC',sans-serif;background:#fafafa;text-align:center;margin:40px;}
-.container {background:#fff;padding:30px;border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,0.1);display:inline-block;width:520px;}
-h1{margin-top:0;color:#2a2a2a;} h2{color:#555;font-weight:400;margin-top:-5px;}
-label{font-weight:bold;} button{margin-top:15px;background:#007ACC;color:white;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:15px;}
+body{font-family:'Segoe UI','Noto Sans TC',sans-serif;background:#fafafa;text-align:center;margin:40px;}
+.container{background:#fff;padding:30px;border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,0.1);display:inline-block;width:520px;}
+h1{margin-top:0;color:#2a2a2a;}h2{color:#555;font-weight:400;margin-top:-5px;}
+label{font-weight:bold;}button{margin-top:15px;background:#007ACC;color:white;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:15px;}
 button:hover{background:#005da6;}
 .spinner{display:none;margin-top:15px;font-style:italic;color:#666;}
 .preview{margin-top:20px;text-align:left;font-size:13px;overflow-x:auto;}
@@ -15,42 +15,99 @@ button:hover{background:#005da6;}
 .preview th,.preview td{border:1px solid #ccc;padding:4px;}
 .indicator{margin-top:8px;font-size:14px;color:#777;}
 footer{margin-top:25px;font-size:13px;color:#888;}
-.blink-green{animation:blinkg 1s linear infinite;} .blink-blue{animation:blinkb 1s linear infinite;}
-@keyframes blinkg{50%{color:green;opacity:.6;}} @keyframes blinkb{50%{color:#007ACC;opacity:.6;}}
+.blink-green{animation:blinkg 1s linear infinite;}
+.blink-blue{animation:blinkb 1s linear infinite;}
+@keyframes blinkg{50%{color:green;opacity:.6;}}
+@keyframes blinkb{50%{color:#007ACC;opacity:.6;}}
 .downloads a{display:inline-block;margin:6px;color:#007ACC;text-decoration:none;}
 .downloads a:hover{text-decoration:underline;}
+.note-block{margin-top:40px;text-align:left;background:#f7f9fc;border-radius:10px;padding:20px;font-size:13px;line-height:1.5;border:1px solid #e0e0e0;}
+.note-block h3{margin-top:0;color:#005da6;}
+.note-block table{width:100%;border-collapse:collapse;margin-top:8px;margin-bottom:10px;}
+.note-block th,.note-block td{border:1px solid #ccc;padding:4px;font-size:12px;}
+.note-block th{background:#eef5ff;}
 </style>
 </head>
 <body>
 <div class="container">
   <h1>🌐 TAAA Semantic–Co-Word Analyzer via GPT</h1>
-  <h2>Multilingual Semantic Network & Theme Assignment Article Algorith(TAAA)</h2>
+  <h2>Multilingual Semantic Network & Theme Assignment Article Algorithm (TAAA)</h2>
+
   <div class="downloads">
     <p><strong>📥 Download Sample Datasets</strong></p>
-    <a href="/static/abstract_sample.csv" target="_blank">🧠 Abstract Sample(1-column)</a><br>
-    <a href="/static/coword_sample.csv" target="_blank">🐾 Co-Word Sample(Multi--column)</a><br>
-    <a href="/static/readme_dataset_info.csv" target="_blank">📘 Readme Dataset Info(Introduction)</a>
+    <a href="/static/abstract_sample.csv" target="_blank">🧠 Abstract Sample (1-column)</a><br>
+    <a href="/static/coword_sample.csv" target="_blank">🐾 Co-Word Sample (Multi-column)</a><br>
+    <a href="/static/readme_dataset_info.csv" target="_blank">📘 Readme Dataset Info (Introduction)</a>
   </div>
 
   <form id="uploadForm" enctype="multipart/form-data">
-    <label for="file">Step 1: Select your CSV file:</label><br>
-       <p>1-column text → Abstract Mode · Multi-column text → Co-Word Mode</p><br>
+    <label for="file">Step 1 · Select your CSV file:</label><br>
+    <p>1-column → Abstract Mode · Multi-column → Co-Word Mode</p><br>
     <input type="file" id="file" name="file" accept=".csv" required><br>
     <button type="submit">🚀 Analyze</button>
   </form>
 
   <div class="spinner" id="spinner">⏳ Analyzing … / 分析中 …</div>
-  <div class="indicator" id="modeIndicator">Step 2: Mode auto-detecting …</div>
+  <div class="indicator" id="modeIndicator">Step 2 · Mode auto-detecting …</div>
   <div id="modeHint" style="font-size:13px;color:#666;margin-top:5px;"></div>
   <div class="preview" id="preview"></div>
 
   <footer>
-
-    References:<a href="https://pubmed.ncbi.nlm.nih.gov/40547885/" target="_blank">🧠SankeyNetwork</a>
-    <a href="https://www.sciencedirect.com/science/article/pii/S2352711025003693" target="_blank">🧠10StepsinExcelforWoS</a>
-    <a href="https://pubmed.ncbi.nlm.nih.gov/40836275/" target="_blank">🧠leadership</a><br>
+    References:
+    <a href="https://pubmed.ncbi.nlm.nih.gov/40547885/" target="_blank">🧠 Sankey Network</a>
+    <a href="https://www.sciencedirect.com/science/article/pii/S2352711025003693" target="_blank">🧠 10 Steps in Excel for WoS</a>
+    <a href="https://pubmed.ncbi.nlm.nih.gov/40836275/" target="_blank">🧠 Leadership</a><br>
     © 2025 Tsair-Wei Chien · TAAA Semantic–Co-Word Analyzer v16.9
   </footer>
+
+  <!-- 📘 Feature Summary Block -->
+  <div class="note-block">
+    <h3>🧩 Functional Summary (Final Specification)</h3>
+    <table>
+      <tr><th>Step</th><th>Module</th><th>Description</th></tr>
+      <tr><td>1️⃣</td><td>Mode 1 – Abstract</td><td>If 1-column input → extract semantic terms (placeholder for GPT/TF-IDF).</td></tr>
+      <tr><td>2️⃣</td><td>Mode 2 – Co-word</td><td>If multi-column input → build co-occurrence pairs and compute edge weights.</td></tr>
+      <tr><td>3️⃣</td><td>Mode 3 – Clustering</td><td>Louvain clustering over all terms → assign cluster to each term.</td></tr>
+      <tr><td>4️⃣</td><td>Mode 4 – Theme Extraction</td><td>Cluster leaders (highest-strength terms) used as theme names.</td></tr>
+      <tr><td>5️⃣</td><td>Mode 5 – Theme Assignment (TAAA)</td><td>Each article (row) gets a dominant theme by mode rule: most frequent cluster ID → if tie, smallest cluster number wins.</td></tr>
+    </table>
+
+    <h3>✅ Output Requirements</h3>
+    <table>
+      <tr><th>File</th><th>Content</th></tr>
+      <tr><td>vertices.csv</td><td>name, value, value2, cluster, leader_label</td></tr>
+      <tr><td>relations.csv</td><td>term1, term2, connection_count</td></tr>
+      <tr><td>theme.csv</td><td>leader (theme), member_count, member_names (comma separated)</td></tr>
+      <tr><td>theme_assignment.csv</td><td>article_id, theme, cluster matched to input rows</td></tr>
+      <tr><td>summary.csv</td><td>AAC, total clusters, node count, edge count</td></tr>
+    </table>
+
+    <p><strong>Plots Generated :</strong><br>
+      • <b>h_theme_bar.png</b> – H-index-style bar chart with two red dotted lines (h-value horizontal & rank vertical).<br>
+      • <b>theme_scatter.html</b> – Interactive scatter (x = edges, y = counts, size ∝ value, color = cluster, AAC in title).
+    </p>
+
+    <h3>✅ Implementation Notes</h3>
+    <ul>
+      <li>Encoding-safe (UTF-8 / Big5)</li>
+      <li>At least 20 nodes enforced</li>
+      <li>Louvain clustering stable and reproducible</li>
+      <li>TAAA theme assignment applied to original uploaded rows</li>
+      <li>All CSV + 2 plots linked in the result page with Return-Home button</li>
+    </ul>
+
+    <h3>✅ Generated Files</h3>
+    <table>
+      <tr><th>Filename</th><th>Description</th></tr>
+      <tr><td>vertices.csv</td><td>name, value, value2, cluster, leader_label</td></tr>
+      <tr><td>relations.csv</td><td>term1, term2, connection_count</td></tr>
+      <tr><td>theme.csv</td><td>leader (theme), member_count, members</td></tr>
+      <tr><td>theme_assignment.csv</td><td>article_id, theme, cluster</td></tr>
+      <tr><td>summary.csv</td><td>AAC, total clusters, nodes, edges</td></tr>
+      <tr><td>h_theme_bar.png</td><td>H-index-style bar chart</td></tr>
+      <tr><td>theme_scatter.html</td><td>Interactive scatter with dotted means and AAC title</td></tr>
+    </table>
+  </div>
 </div>
 
 <script>
@@ -60,14 +117,20 @@ const indicator=document.getElementById("modeIndicator");
 const modeHint=document.getElementById("modeHint");
 const spinner=document.getElementById("spinner");
 
-function isProbablyBig5(buffer){let view=new Uint8Array(buffer);let high=view.filter(b=>b>0x7F).length;return high>view.length*0.1;}
+function isProbablyBig5(buffer){
+  let view=new Uint8Array(buffer);
+  let high=view.filter(b=>b>0x7F).length;
+  return high>view.length*0.1;
+}
 
 fileInput.addEventListener("change",()=>{
-  const file=fileInput.files[0];if(!file)return;
+  const file=fileInput.files[0];
+  if(!file)return;
   const reader=new FileReader();
   reader.onload=e=>{
     let buffer=e.target.result;let text="";
-    try{text=new TextDecoder("utf-8",{fatal:true}).decode(buffer);}catch{try{text=new TextDecoder("big5").decode(buffer);}catch{text="";}}
+    try{text=new TextDecoder("utf-8",{fatal:true}).decode(buffer);}
+    catch{try{text=new TextDecoder("big5").decode(buffer);}catch{text="";}}
     if(isProbablyBig5(buffer)){try{text=new TextDecoder("big5").decode(buffer);}catch{}}
     const lines=text.split(/\r?\n/).filter(l=>l.trim().length>0).slice(0,6);
     const rows=lines.map(l=>l.split(/,|;|\t/));if(!rows.length)return;
@@ -76,9 +139,13 @@ fileInput.addEventListener("change",()=>{
     for(let i=1;i<rows.length;i++){html+="<tr>"+rows[i].map(c=>`<td>${c}</td>`).join("")+"</tr>";}
     html+="</tbody></table>";preview.innerHTML=html;
     const cols=rows[0].length;
-    if(cols<=1){indicator.textContent="🧠 Detected Abstract Mode – Processing …";indicator.className="indicator blink-green";
+    if(cols<=1){
+      indicator.textContent="🧠 Detected Abstract Mode – Processing …";
+      indicator.className="indicator blink-green";
       modeHint.textContent="Single-column file → abstract analysis (單欄 → 摘要模式)";
-    }else{indicator.textContent="🐾 Detected Co-Word Mode – Processing …";indicator.className="indicator blink-blue";
+    }else{
+      indicator.textContent="🐾 Detected Co-Word Mode – Processing …";
+      indicator.className="indicator blink-blue";
       modeHint.textContent="Multi-column file → co-word analysis (多欄 → 共詞模式)";
     }
   };
@@ -87,12 +154,18 @@ fileInput.addEventListener("change",()=>{
 
 document.getElementById("uploadForm").addEventListener("submit",async e=>{
   e.preventDefault();
-  const file=fileInput.files[0];if(!file)return;
+  const file=fileInput.files[0];
+  if(!file)return;
   spinner.style.display="block";
   const data=new FormData();data.append("file",file);
-  try{const response=await fetch("/analyze_csv",{method:"POST",body:data});
-       const html=await response.text();document.open();document.write(html);document.close();}
-  catch{spinner.style.display="none";indicator.textContent="❌ Error during analysis.";}
+  try{
+    const response=await fetch("/analyze_csv",{method:"POST",body:data});
+    const html=await response.text();
+    document.open();document.write(html);document.close();
+  }catch{
+    spinner.style.display="none";
+    indicator.textContent="❌ Error during analysis.";
+  }
 });
 </script>
 </body>
