@@ -1,172 +1,204 @@
-import os, io, random
-import pandas as pd
-import chardet
-import matplotlib.pyplot as plt
-import networkx as nx
-from pathlib import Path
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, UploadFile
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from langcodes import Language
+from pathlib import Path
+import io, os, chardet, pandas as pd, matplotlib.pyplot as plt, networkx as nx, plotly.express as px
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.decomposition import PCA
 from sklearn.cluster import KMeans
-import plotly.express as px
 
-# -------------------------------------------------------------
-#  App setup
-# -------------------------------------------------------------
+# ------------------------------------------------------------
+# 🚀 App initialization
+# ------------------------------------------------------------
 app = FastAPI()
 BASE_DIR = Path(__file__).resolve().parent
 TEMPLATE_DIR = BASE_DIR / "templates"
-TEMPLATE_DIR.mkdir(exist_ok=True)
-STATIC_OUT = BASE_DIR / "static" / "outputs"
-STATIC_OUT.mkdir(parents=True, exist_ok=True)
+RESULTS_DIR = BASE_DIR / "results"
+RESULTS_DIR.mkdir(exist_ok=True)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
-# -------------------------------------------------------------
-#  Helpers
-# -------------------------------------------------------------
-def smart_read_csv(file_bytes: bytes):
-    """Auto-detect encoding (UTF-8 / UTF-8-SIG / CP950)."""
-    for enc in ["utf-8", "utf-8-sig", "cp950"]:
-        try:
-            return pd.read_csv(io.BytesIO(file_bytes), encoding=enc)
-        except Exception:
-            continue
-    raise ValueError("Unable to decode CSV file.")
-
-def detect_mode(df: pd.DataFrame):
-    """Simplified rule: 1-column → Abstract; multi-column → Co-word."""
-    return ("abstract", df.columns[0]) if df.shape[1] == 1 else ("coword", list(df.columns))
-
-def detect_language(df: pd.DataFrame):
-    """Rough bilingual detection using langcodes (Render-safe)."""
-    sample = " ".join(df.iloc[0].astype(str).tolist())[:200]
+# ------------------------------------------------------------
+# 🧩 Helper functions
+# ------------------------------------------------------------
+def smart_read_csv(file_bytes):
+    """Auto-detect encoding and safely read CSV."""
     try:
-        lang_code = str(Language.find(sample))
-    except Exception:
-        lang_code = "en"
-    if "zh" in lang_code:
-        return "zh"
-    elif "en" in lang_code:
-        return "en"
-    return "other"
+        return pd.read_csv(io.BytesIO(file_bytes), encoding="utf-8")
+    except UnicodeDecodeError:
+        det = chardet.detect(file_bytes)
+        enc = det.get("encoding", "utf-8")
+        print(f"⚠️ Using fallback encoding: {enc}")
+        return pd.read_csv(io.BytesIO(file_bytes), encoding=enc, errors="replace")
 
-# -------------------------------------------------------------
+def clean_text(x):
+    if pd.isna(x): return ""
+    return str(x).replace("\x00", " ").replace("\n", " ").strip()
+
+# ------------------------------------------------------------
+# 🏠 Home route
+# ------------------------------------------------------------
 @app.get("/", response_class=HTMLResponse)
-async def home():
-    path = TEMPLATE_DIR / "index.html"
-    return HTMLResponse(path.read_text("utf-8")) if path.exists() else HTMLResponse("<h3>❌ Missing index.html</h3>")
+async def root():
+    index_path = TEMPLATE_DIR / "index.html"
+    if index_path.exists():
+        return HTMLResponse(index_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h3>❌ index.html not found under templates/.</h3>")
 
-# -------------------------------------------------------------
-@app.post("/preview", response_class=HTMLResponse)
-async def preview_csv(file: UploadFile = File(...)):
-    df = smart_read_csv(await file.read())
-    mode, cols = detect_mode(df)
-    lang = detect_language(df)
-
-    color = "green" if mode == "abstract" else "blue"
-    label_zh = "🧠 摘要模式" if mode == "abstract" else "🐾 共詞模式"
-    hint_zh  = "偵測到單欄 → 使用摘要分析" if mode == "abstract" else "偵測到多欄 → 使用共詞分析"
-    label_en = "🧠 Abstract Mode" if mode == "abstract" else "🐾 Co-Word Mode"
-    hint_en  = "Detected single column → Abstract analysis" if mode == "abstract" else "Detected multi-column → Co-Word analysis"
-    label, hint = (label_zh, hint_zh) if lang == "zh" else (label_en, hint_en)
-
-    preview = df.head(5).to_html(index=False, escape=False)
-    return HTMLResponse(f"""
-        <h3>📄 Preview</h3>{preview}
-        <h4 style='color:{color}'>{label}</h4><p>{hint}</p>
-        <form action="/analyze_csv" enctype="multipart/form-data" method="post">
-          <input type="hidden" name="mode" value="{mode}">
-          <input type="file" name="file" accept=".csv" required>
-          <button type="submit">🚀 Analyze</button>
-        </form>
-    """)
-
-# -------------------------------------------------------------
+# ------------------------------------------------------------
+# 📈 Analysis route
+# ------------------------------------------------------------
 @app.post("/analyze_csv", response_class=HTMLResponse)
-async def analyze_csv(file: UploadFile = File(...)):
-    df = smart_read_csv(await file.read())
-    mode, cols = detect_mode(df)
+async def analyze_csv(file: UploadFile):
+    contents = await file.read()
+    df = smart_read_csv(contents)
 
-    # ---------- Build Graph ----------
+    if df.empty:
+        return HTMLResponse("<h3>❌ CSV file is empty or unreadable.</h3>")
+
+    df.columns = [c.strip().lower() for c in df.columns]
+    df = df.dropna(how="all")
+
+    # Auto-detect mode
+    mode = "abstract" if len(df.columns) == 1 else "coword"
+
+    # --------------------------------------------------------
+    # 🧠 Abstract Mode
+    # --------------------------------------------------------
     if mode == "abstract":
-        text_col = cols if isinstance(cols, str) else cols[0]
-        texts = df[text_col].astype(str).tolist()
-        vec = TfidfVectorizer(max_features=500)
-        X = vec.fit_transform(texts)
-        sim = cosine_similarity(X)
-        terms = vec.get_feature_names_out()
-        G = nx.Graph()
-        for i, t1 in enumerate(terms):
-            for j, t2 in enumerate(terms[i+1:], i+1):
-                if sim[i][j] > 0.25:
-                    G.add_edge(t1, t2, weight=float(sim[i][j]))
+        text_col = df.columns[0]
+        df[text_col] = df[text_col].map(clean_text)
+        df = df[df[text_col] != ""]
+        if df.empty:
+            return HTMLResponse("<h3>❌ No valid abstract text found.</h3>")
+
+        corpus = df[text_col].tolist()
+        tfidf = TfidfVectorizer(max_features=200)
+        X = tfidf.fit_transform(corpus)
+        km = KMeans(n_clusters=min(5, len(corpus)), random_state=42, n_init="auto")
+        df["theme"] = km.fit_predict(X)
+        df["theme"] = df["theme"].apply(lambda x: f"#Theme{x+1}")
+
+        # --- Theme Bar ---
+        theme_counts = df["theme"].value_counts().reset_index()
+        theme_counts.columns = ["theme", "count"]
+        plt.figure(figsize=(8, 4))
+        plt.barh(theme_counts["theme"], theme_counts["count"], color="#0078d4")
+        plt.title("Core Themes (H-Theme Bar)")
+        plt.tight_layout()
+        plt.savefig(RESULTS_DIR / "theme_bar.png", bbox_inches="tight")
+        plt.close()
+
+        # --- Theme Scatter (Plotly Interactive) ---
+        coords = X.toarray()[:, :2]
+        df["x"], df["y"] = coords[:, 0], coords[:, 1]
+        scatter_fig = px.scatter(
+            df.head(20), x="x", y="y", text="theme", color="theme",
+            color_discrete_sequence=px.colors.qualitative.Set2,
+            title="Top 20 Themes (Interactive Scatter)"
+        )
+        scatter_fig.update_traces(textfont=dict(color="red", size=14))
+        scatter_fig.write_html(RESULTS_DIR / "theme_scatter.html")
+
+        # --- Save outputs ---
+        df.to_csv(RESULTS_DIR / "themes.csv", index=False, encoding="utf-8-sig")
+
+        html = f"""
+        <meta charset='utf-8'>
+        <h2>🎉 Analysis Complete (Abstract Mode)</h2>
+        <p>Detected {len(theme_counts)} major themes.</p>
+        <a href="/results/themes.csv" download>🧩 Themes</a><br>
+        <a href="/results/theme_bar.png" download>📊 Theme Bar</a><br>
+        <a href="/results/theme_scatter.html" target="_blank">🌈 Theme Scatter (Interactive)</a>
+        <hr>
+        <div style='text-align:center;margin-top:25px;'>
+          <a href="/" style="
+            display:inline-block;background:#0078d4;color:white;
+            padding:10px 22px;border-radius:8px;text-decoration:none;
+            font-size:15px;font-weight:500;transition:background 0.3s ease;">
+            ⬅️ Return to Home
+          </a>
+        </div>
+        """
+        return HTMLResponse(html)
+
+    # --------------------------------------------------------
+    # 🐾 Co-Word Mode
+    # --------------------------------------------------------
     else:
-        edges = []
-        for _, row in df.iterrows():
-            words = [str(w).strip() for w in row.dropna()]
-            for i, w1 in enumerate(words):
-                for w2 in words[i+1:]:
-                    edges.append((w1, w2))
+        df = df.applymap(clean_text)
+        terms = df.columns
         G = nx.Graph()
-        for u, v in edges:
-            G.add_edge(u, v)
 
-    # ---------- Degree & Top Terms ----------
-    deg = dict(G.degree())
-    top_terms = sorted(deg.items(), key=lambda x: x[1], reverse=True)[:20]
+        for _, row in df.iterrows():
+            row_terms = [t for t in terms if str(row[t]).strip() != ""]
+            for i, a in enumerate(row_terms):
+                for b in row_terms[i + 1:]:
+                    G.add_edge(a, b)
 
-    # ---------- Bar Chart ----------
-    plt.figure(figsize=(8,5))
-    plt.barh([t[0] for t in top_terms], [t[1] for t in top_terms])
-    plt.title(f"Top 20 Terms ({mode.title()} Mode)")
-    plt.tight_layout()
-    plt.savefig(STATIC_OUT / "theme_bar.png", dpi=150)
-    plt.close()
+        if len(G.nodes()) == 0:
+            return HTMLResponse("<h3>❌ No valid relations found in co-word data.</h3>")
 
-    # ---------- Interactive Plotly Scatter ----------
-    terms = [t[0] for t in top_terms]
-    vec = TfidfVectorizer()
-    X = vec.fit_transform(terms)
-    coords = PCA(n_components=2, random_state=42).fit_transform(X.toarray())
-    n_clusters = min(6, max(2, len(terms)//4))
-    km = KMeans(n_clusters=n_clusters, n_init="auto", random_state=42)
-    labels = km.fit_predict(coords)
-    df_plot = pd.DataFrame({
-        "x": coords[:,0],
-        "y": coords[:,1],
-        "term": terms,
-        "cluster": [f"Theme {l+1}" for l in labels]
-    })
+        degree_df = (
+            pd.DataFrame(G.degree(), columns=["term", "degree"])
+            .sort_values("degree", ascending=False)
+            .head(20)
+        )
 
-    fig = px.scatter(
-        df_plot, x="x", y="y", color="cluster", text="term",
-        title=f"Theme Scatter ({mode.title()} Mode)",
-        hover_data=["term"],
-        color_discrete_sequence=px.colors.qualitative.Plotly
-    )
-    fig.update_traces(textposition="top center", marker=dict(size=16, opacity=0.8))
-    fig.update_layout(showlegend=True, height=600, width=700)
-    fig.write_html(str(STATIC_OUT / "theme_scatter.html"), include_plotlyjs="cdn")
+        # --- Theme Bar ---
+        plt.figure(figsize=(8, 5))
+        plt.barh(degree_df["term"], degree_df["degree"], color="#1f77b4")
+        plt.title("Top 20 Core Themes (H-Theme Bar)")
+        plt.tight_layout()
+        plt.savefig(RESULTS_DIR / "theme_bar.png", bbox_inches="tight")
+        plt.close()
 
-    # ---------- Save CSVs ----------
-    pd.DataFrame(G.nodes, columns=["term"]).to_csv(STATIC_OUT / "vertices.csv", index=False)
-    pd.DataFrame(G.edges, columns=["source","target"]).to_csv(STATIC_OUT / "relations.csv", index=False)
-    pd.DataFrame({"theme":[t[0] for t in top_terms]}).to_csv(STATIC_OUT / "themes.csv", index=False)
+        # --- Scatter (Interactive) ---
+        pos = nx.spring_layout(G, seed=42)
+        scatter_df = pd.DataFrame(pos).reset_index()
+        scatter_df.columns = ["term", "x", "y"]
+        scatter_df = scatter_df.merge(degree_df, on="term", how="inner")
+        scatter_fig = px.scatter(
+            scatter_df, x="x", y="y",
+            text=scatter_df["term"].apply(lambda t: f"#{t}"),
+            color="degree", color_continuous_scale="Bluered",
+            title="Top 20 Themes (Interactive Scatter)"
+        )
+        scatter_fig.update_traces(textfont=dict(color="red", size=14))
+        scatter_fig.write_html(RESULTS_DIR / "theme_scatter.html")
 
-    return HTMLResponse(f"""
-        <h2>✅ Analysis Complete</h2>
-        <p>Detected Mode: <b>{mode}</b></p>
-        <h3>Download Results</h3>
-        <ul>
-          <li><a href="/static/outputs/vertices.csv" download>🔹 Vertices</a></li>
-          <li><a href="/static/outputs/relations.csv" download>🔸 Relations</a></li>
-          <li><a href="/static/outputs/themes.csv" download>🧩 Themes</a></li>
-          <li><a href="/static/outputs/theme_bar.png" download>📊 Theme Bar</a></li>
-          <li><a href="/static/outputs/theme_scatter.html" target="_blank">🌈 Theme Scatter (Interactive)</a></li>
-        </ul>
-        <footer>© 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v9.7 stable</footer>
-    """)
+        # --- Save CSV Outputs ---
+        degree_df.to_csv(RESULTS_DIR / "themes.csv", index=False, encoding="utf-8-sig")
+        nx.write_weighted_edgelist(G, RESULTS_DIR / "relations.csv")
+        pd.DataFrame(G.nodes(), columns=["term"]).to_csv(
+            RESULTS_DIR / "vertices.csv", index=False, encoding="utf-8-sig"
+        )
+
+        html = f"""
+        <meta charset='utf-8'>
+        <h2>🎉 Analysis Complete (Co-Word Mode)</h2>
+        <p>Detected {len(G.nodes())} terms.</p>
+        <a href="/results/vertices.csv" download>🔹 Vertices</a><br>
+        <a href="/results/relations.csv" download>🔸 Relations</a><br>
+        <a href="/results/themes.csv" download>🧩 Themes</a><br>
+        <a href="/results/theme_bar.png" download>📊 Theme Bar</a><br>
+        <a href="/results/theme_scatter.html" target="_blank">🌈 Theme Scatter (Interactive)</a>
+        <hr>
+        <div style='text-align:center;margin-top:25px;'>
+          <a href="/" style="
+            display:inline-block;background:#0078d4;color:white;
+            padding:10px 22px;border-radius:8px;text-decoration:none;
+            font-size:15px;font-weight:500;transition:background 0.3s ease;">
+            ⬅️ Return to Home
+          </a>
+        </div>
+        """
+        return HTMLResponse(html)
+
+# ------------------------------------------------------------
+# 📦 File Downloader
+# ------------------------------------------------------------
+@app.get("/results/{filename}")
+async def download_file(filename: str):
+    file_path = RESULTS_DIR / filename
+    if file_path.exists():
+        return FileResponse(file_path)
+    return HTMLResponse("<h3>❌ File not found.</h3>")
