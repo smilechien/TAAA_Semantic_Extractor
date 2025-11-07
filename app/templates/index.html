@@ -23,29 +23,33 @@ footer{margin-top:25px;font-size:13px;color:#888;}
 </head>
 <body>
 <div class="container">
-  <h1>🌐 TAAA Semantic–Co-Word Analyzer</h1>
-  <h2>Multilingual Semantic Network & Theme Assignment Tool</h2>
+  <h1>🌐 TAAA Semantic–Co-Word Analyzer via GPT</h1>
+  <h2>Multilingual Semantic Network & Theme Assignment Article Algorith(TAAA)</h2>
   <div class="downloads">
     <p><strong>📥 Download Sample Datasets</strong></p>
-    <a href="/static/abstract_sample.csv" target="_blank">🧠 Abstract Sample</a><br>
-    <a href="/static/coword_sample.csv" target="_blank">🐾 Co-Word Sample</a><br>
-    <a href="/static/readme_dataset_info.csv" target="_blank">📘 Readme Dataset Info</a>
+    <a href="/static/abstract_sample.csv" target="_blank">🧠 Abstract Sample(1-column)</a><br>
+    <a href="/static/coword_sample.csv" target="_blank">🐾 Co-Word Sample(Multi--column)</a><br>
+    <a href="/static/readme_dataset_info.csv" target="_blank">📘 Readme Dataset Info(Introduction)</a>
   </div>
 
   <form id="uploadForm" enctype="multipart/form-data">
-    <label for="file">Select your CSV file:</label><br>
+    <label for="file">Step 1: Select your CSV file:</label><br>
+       <p>1-column text → Abstract Mode · Multi-column text → Co-Word Mode</p><br>
     <input type="file" id="file" name="file" accept=".csv" required><br>
     <button type="submit">🚀 Analyze</button>
   </form>
 
   <div class="spinner" id="spinner">⏳ Analyzing … / 分析中 …</div>
-  <div class="indicator" id="modeIndicator">Mode auto-detecting …</div>
+  <div class="indicator" id="modeIndicator">Step 2: Mode auto-detecting …</div>
   <div id="modeHint" style="font-size:13px;color:#666;margin-top:5px;"></div>
   <div class="preview" id="preview"></div>
 
   <footer>
-    1-column → Abstract Mode · Multi-column → Co-Word Mode<br>
-    © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v16.9
+
+    References:<a href="https://pubmed.ncbi.nlm.nih.gov/40547885/" target="_blank">🧠SankeyNetwork</a>
+    <a href="https://www.sciencedirect.com/science/article/pii/S2352711025003693" target="_blank">🧠10StepsinExcelforWoS</a>
+    <a href="https://pubmed.ncbi.nlm.nih.gov/40836275/" target="_blank">🧠leadership</a><br>
+    © 2025 Tsair-Wei Chien · TAAA Semantic–Co-Word Analyzer v16.9
   </footer>
 </div>
 
