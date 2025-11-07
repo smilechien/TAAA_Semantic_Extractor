@@ -1,147 +1,42 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>TAAA Semantic Analyzer</title>
-  <style>
-    body {
-      font-family: 'Segoe UI', 'Noto Sans TC', sans-serif;
-      background-color: #f9fafc;
-      margin: 40px;
-      color: #222;
-    }
-    h1 { color: #007ACC; }
-    h2 { margin-top: 25px; color: #444; }
-    .upload-box {
-      background: #fff;
-      border: 2px dashed #007ACC;
-      border-radius: 12px;
-      padding: 30px;
-      text-align: center;
-    }
-    button {
-      background: #007ACC;
-      color: white;
-      padding: 10px 20px;
-      border: none;
-      border-radius: 6px;
-      cursor: pointer;
-      font-size: 15px;
-    }
-    button:hover { background: #005c9a; }
-    #preview {
-      margin-top: 25px;
-      background: #fff;
-      border: 1px solid #ccc;
-      border-radius: 10px;
-      padding: 10px;
-      overflow-x: auto;
-      display: none;
-    }
-    table {
-      border-collapse: collapse;
-      width: 100%;
-      margin-top: 5px;
-    }
-    th, td {
-      border: 1px solid #ddd;
-      padding: 6px;
-      text-align: left;
-      white-space: nowrap;
-    }
-    th { background: #007ACC; color: white; }
-    #status {
-      margin-top: 20px;
-      font-size: 15px;
-      color: #007ACC;
-      display: none;
-    }
-    #spinner {
-      display: inline-block;
-      width: 18px;
-      height: 18px;
-      border: 3px solid #007ACC;
-      border-top: 3px solid transparent;
-      border-radius: 50%;
-      animation: spin 1s linear infinite;
-      vertical-align: middle;
-      margin-right: 8px;
-    }
-    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-    .mode-info {
-      margin-top: 10px;
-      padding: 10px;
-      background: #e7f3ff;
-      border-left: 5px solid #007ACC;
-      border-radius: 5px;
-      display: none;
-    }
-  </style>
+<meta charset="UTF-8">
+<title>🌐 TAAA Semantic–Co-Word Analyzer</title>
+<style>
+body{font-family:'Segoe UI','Noto Sans TC',sans-serif;background:#fafafa;text-align:center;margin:40px;}
+.container{background:#fff;padding:30px;border-radius:14px;box-shadow:0 2px 10px rgba(0,0,0,0.1);display:inline-block;width:520px;}
+h1{margin-top:0;color:#2a2a2a;}h2{color:#555;font-weight:400;margin-top:-5px;}
+label{font-weight:bold;}button{margin-top:15px;background:#007ACC;color:white;border:none;padding:10px 24px;border-radius:6px;cursor:pointer;font-size:15px;}
+button:hover{background:#005da6;}
+.spinner{display:none;margin-top:15px;font-style:italic;color:#666;}
+.preview{margin-top:20px;text-align:left;font-size:13px;overflow-x:auto;}
+.preview table{border-collapse:collapse;width:100%;}
+.preview th,.preview td{border:1px solid #ccc;padding:4px;}
+.indicator{margin-top:8px;font-size:14px;color:#777;}
+footer{margin-top:25px;font-size:13px;color:#888;}
+.blink-green{animation:blinkg 1s linear infinite;}
+.blink-blue{animation:blinkb 1s linear infinite;}
+@keyframes blinkg{50%{color:green;opacity:.6;}}
+@keyframes blinkb{50%{color:#007ACC;opacity:.6;}}
+.downloads a{display:inline-block;margin:6px;color:#007ACC;text-decoration:none;}
+.downloads a:hover{text-decoration:underline;}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/jschardet@3.0.0/dist/jschardet.min.js"></script>
 </head>
 <body>
-  <h1>📊 TAAA Co-Word / Abstract Analyzer</h1>
-  <p>Upload a UTF-8 CSV file — the system automatically detects <b>Abstract</b> or <b>Co-Word</b> mode,
-     previews the first 5 rows, and performs semantic theme analysis.</p>
+<div class="container">
+  <h1>🌐 TAAA Semantic–Co-Word Analyzer</h1>
+  <h2>Multilingual Semantic Network & Theme Assignment Tool</h2>
 
-  <div class="upload-box">
-    <form id="uploadForm" enctype="multipart/form-data" method="post" action="/analyze_csv">
-      <input type="file" name="file" id="fileInput" accept=".csv" required><br><br>
-      <button type="submit">🚀 Analyze CSV</button>
-    </form>
+  <div class="downloads">
+    <p><strong>📥 Download Sample Datasets</strong></p>
+    <a href="/static/abstract_sample.csv" target="_blank">🧠 Abstract Sample</a><br>
+    <a href="/static/coword_sample.csv" target="_blank">🐾 Co-Word Sample</a><br>
+    <a href="/static/readme_dataset_info.csv" target="_blank">📘 Readme Info</a>
   </div>
 
-  <div id="mode" class="mode-info"></div>
-  <div id="preview">
-    <h3>📋 Preview of Uploaded CSV (Top 5 Rows)</h3>
-    <div id="tableContainer"></div>
-  </div>
-
-  <div id="status">
-    <div id="spinner"></div> Analyzing data... please wait.
-  </div>
-
-  <script>
-    // ========== Preview + Mode Detection ==========
-    document.getElementById('fileInput').addEventListener('change', function (evt) {
-      const file = evt.target.files[0];
-      if (!file) return;
-      const reader = new FileReader();
-      reader.onload = function (e) {
-        const text = e.target.result;
-        const rows = text.split(/\r?\n/).filter(r => r.trim()).slice(0, 6);
-        const data = rows.map(r => r.split(','));
-        if (data.length === 0) return;
-
-        // Detect mode: single column => abstract; multiple => coword
-        const header = data[0];
-        const mode = header.length === 1 ? 'abstract' : 'coword';
-        const modeBox = document.getElementById('mode');
-        if (mode === 'abstract') {
-          modeBox.innerHTML = "🧬 Detected <b>Abstract Mode</b> → Theme assignment will be generated (TAAA).";
-        } else {
-          modeBox.innerHTML = "🔗 Detected <b>Co-Word Mode</b> → Network & Cluster visualization enabled.";
-        }
-        modeBox.style.display = "block";
-
-        // Render table preview
-        let html = '<table><thead><tr>';
-        html += header.map(h => `<th>${h}</th>`).join('');
-        html += '</tr></thead><tbody>';
-        for (let i = 1; i < data.length; i++) {
-          html += '<tr>' + data[i].map(c => `<td>${c}</td>`).join('') + '</tr>';
-        }
-        html += '</tbody></table>';
-        document.getElementById('tableContainer').innerHTML = html;
-        document.getElementById('preview').style.display = 'block';
-      };
-      reader.readAsText(file, 'UTF-8');
-    });
-
-    // ========== Show Spinner ==========
-    document.getElementById('uploadForm').addEventListener('submit', function () {
-      document.getElementById('status').style.display = 'block';
-    });
-  </script>
-</body>
-</html>
+  <form id="uploadForm" enctype="multipart/form-data">
+    <label>Select your CSV file:</label><br>
+    <input type="file" id="file" name="file" accept=".csv" required><br>
+    <button type="submit">🚀
