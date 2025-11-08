@@ -1,6 +1,5 @@
 # ============================================================
-# ✅ Render-safe requirements.txt
-# TAAA Semantic–Co-Word Analyzer v20.0
+# ✅ requirements.txt — Render Safe (v20.2)
 # ============================================================
 
 fastapi==0.115.0
@@ -10,12 +9,9 @@ pandas==2.2.2
 numpy==1.26.4
 networkx==3.3
 python-louvain==0.16
-matplotlib==3.9.2
+matplotlib==3.8.4
 plotly==5.23.0
-scipy==1.13.1
 chardet==5.2.0
-
-# Fix build metadata issues on Render
-setuptools>=69.0.0
-wheel>=0.43.0
-pip>=25.1.1
+setuptools>=70.0.0
+wheel>=0.44.0
+pip>=25.3
