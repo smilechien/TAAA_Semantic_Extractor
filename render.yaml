@@ -1,21 +1,23 @@
-# render.yaml — 部署設定檔
+# render.yaml
 
 services:
   - type: web
-    name: taaa-app                # 你的服務名稱，可自行更改
+    name: taaa-app
     env: python
-    plan: free                    # 可改成 starter 或 plus
-    region: oregon                # 伺服器地區，可用 singapore / frankfurt / oregon 等
+    plan: free
+    region: singapore        # 可改 oregon / frankfurt / singapore 等
+
     buildCommand: |
       pip install --upgrade pip setuptools wheel
       pip install -r requirements.txt
+
     startCommand: |
-      python app.py               # 若你用 FastAPI，改成 uvicorn main:app --host 0.0.0.0 --port 10000
+      gunicorn app:app --bind 0.0.0.0:$PORT
+
     envVars:
       - key: PYTHON_VERSION
-        value: 3.12.3             # ✅ 關鍵：強制使用 Python 3.12（避免 pandas 在 3.13 編譯失敗）
+        value: 3.12.3         # ✅ 關鍵：避免 pandas 在 3.13 下編譯錯誤
       - key: OPENAI_API_KEY
-        sync: false               # 🔒 你稍後在 Render 儀表板手動輸入 API key
+        sync: false           # 🔒 請在 Render 控制台手動輸入金鑰
       - key: PORT
-        value: 10000              # Render 預設使用這個埠口
-
+        value: 10000

@@ -1,14 +1,22 @@
-fastapi==0.115.0
-uvicorn==0.30.6
+# ==== 基本執行環境 ====
+python-dotenv==1.0.1
+requests==2.31.0
+
+# ==== Flask Web 伺服器 ====
+Flask==3.0.3
+gunicorn==22.0.0
+
+# ==== OpenAI SDK ====
+openai==1.47.0
+tiktoken==0.7.0
+
+# ==== 數據處理 ====
 pandas==2.2.2
 numpy==1.26.4
-networkx==3.3
-python-louvain==0.15
-plotly==5.24.1
-matplotlib==3.8.4
-jinja2==3.1.4
-aiofiles==24.1.0
-typing-extensions>=4.9.0
+
+# ==== 資料庫 / 工具（如需） ====
+SQLAlchemy==2.0.30
+cryptography==42.0.8
 
 
 
