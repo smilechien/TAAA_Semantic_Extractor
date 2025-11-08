@@ -1,20 +1,20 @@
 # ============================================================
-# ✅ requirements.txt — Render-Safe for Python 3.13 (Final v20.4)
+# ✅ requirements.txt — Render-Safe (Python 3.13 Final v20.5)
 # ============================================================
 
 fastapi==0.115.0
 uvicorn==0.30.6
 jinja2==3.1.4
 pandas==2.3.3
-numpy==2.2.6                 # 👈 3.13-compatible wheel
+numpy==2.2.6
 networkx==3.3
-python-louvain==0.16
-matplotlib==3.9.2            # 👈 also ships 3.13 wheels
+community-louvain==0.16        # 👈 3.13-compatible Louvain fork
+matplotlib==3.9.2
 plotly==5.23.0
 chardet==5.2.0
 
-# Build tools (prevent metadata-generation errors)
 setuptools>=75.0.0
 wheel>=0.44.0
 pip>=25.3
 --only-binary=:all:
+
