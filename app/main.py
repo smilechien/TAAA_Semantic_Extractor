@@ -1,237 +1,223 @@
 # ============================================================
-# 🧠  TAAA Semantic–Co-Word Analyzer  (v18.4)
-# Safe encoding · R-style Top20+ selection · AAC + Full report
+# 🌐 main.py — TAAA Semantic–Co-Word Analyzer v20.2
+# Author: Smile
+# Description: 5-Module pipeline for semantic / co-word clustering
 # ============================================================
 
-import os, io
-import pandas as pd
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import networkx as nx
-import plotly.express as px
-from fastapi import FastAPI, Request, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request, UploadFile, Form
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-import community.community_louvain as community_louvain
+import pandas as pd, numpy as np, io, os
+import networkx as nx
+import matplotlib.pyplot as plt
+import plotly.express as px
+from community import community_louvain
 
-# ------------------------------------------------------------
-# 📁 CONFIG
-# ------------------------------------------------------------
 app = FastAPI()
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-STATIC_DIR = os.path.join(BASE_DIR, "static")
-TEMPLATE_DIR = os.path.join(BASE_DIR, "templates")
-os.makedirs(STATIC_DIR, exist_ok=True)
-app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-templates = Jinja2Templates(directory=TEMPLATE_DIR)
+os.makedirs("static", exist_ok=True)
+templates = Jinja2Templates(directory="templates")
 
-# ------------------------------------------------------------
-# ⚙️ HELPERS
-# ------------------------------------------------------------
-def safe_read_csv(upload_file: UploadFile):
-    """Robustly read CSVs with mixed UTF-8/Big5 encodings."""
-    content = upload_file.file.read()
-    for enc in ["utf-8-sig", "utf-8", "big5hkscs", "big5", "cp950"]:
-        try:
-            text = content.decode(enc, errors="ignore")
-            return pd.read_csv(io.StringIO(text))
-        except Exception:
-            continue
-    raise ValueError("❌ Cannot decode CSV file. Try UTF-8 or Big5 encoding.")
+# ============================================================
+# 🧩 Helper functions
+# ============================================================
 
-def normalize_headers(df):
-    df.columns = [c.strip().lower() for c in df.columns]
-    alias = {
-        "term1": "source","node1": "source","word1": "source","keyword1": "source",
-        "term2": "target","node2": "target","word2": "target","keyword2": "target",
-        "from": "source","to": "target","value": "weight"
-    }
-    df.rename(columns={k: v for k, v in alias.items() if k in df.columns}, inplace=True)
-    return df
-
-def wide_to_edges(df):
-    cols = list(df.columns)
-    src_col = cols[0]
-    melt_df = df.melt(id_vars=[src_col], var_name="target_col", value_name="target")
-    melt_df.rename(columns={src_col: "source"}, inplace=True)
-    melt_df = melt_df[melt_df["target"].astype(str).str.strip().notna()]
-    melt_df = melt_df[melt_df["target"].astype(str).str.strip() != ""]
-    melt_df["weight"] = 1
-    return melt_df[["source", "target", "weight"]]
+def safe_read_csv(file: UploadFile) -> pd.DataFrame:
+    """Auto-detect UTF-8 or Big5"""
+    data = file.file.read()
+    try:
+        df = pd.read_csv(io.BytesIO(data), encoding="utf-8")
+    except Exception:
+        df = pd.read_csv(io.BytesIO(data), encoding="big5", errors="ignore")
+    return df.fillna("")
 
 def compute_aac(values):
-    """AAC = ((v1/v2)/(v2/v3)) / (1 + ((v1/v2)/(v2/v3)))"""
-    values = sorted([v for v in values if v > 0], reverse=True)
-    if len(values) < 3:
-        return None
-    v1, v2, v3 = values[:3]
-    try:
-        ratio = (v1 / v2) / (v2 / v3)
-        aac = ratio / (1 + ratio)
-        return round(aac, 2)
-    except ZeroDivisionError:
-        return None
+    """AAC dominance metric from top 3 values"""
+    vals = sorted(values, reverse=True)[:3]
+    if len(vals) < 3 or vals[1] == 0 or vals[2] == 0:
+        return 0
+    v1, v2, v3 = vals
+    aac = ((v1 / v2) / (v2 / v3)) / (1 + ((v1 / v2) / (v2 / v3)))
+    return round(aac, 2)
 
-# ---------- R-style Top-20+ selection ----------
-def select_top20_like_R(vertices, cap_limit=20):
-    nodes = vertices.copy()
-    nodes["freq"] = nodes.groupby("cluster")["cluster"].transform("count")
-    selected = pd.DataFrame(columns=nodes.columns)
-    remaining = cap_limit
+# ============================================================
+# 🧭 Analysis Route
+# ============================================================
 
-    def pick(df, expr, per_cluster, remaining):
-        if remaining <= 0: return df.iloc[0:0]
-        d = df.query(expr)
-        if d.empty: return d.iloc[0:0]
-        clusters = (d.groupby("cluster")
-                      .agg(freq=("freq", "first"), sumv=("strength", "sum"))
-                      .reset_index()
-                      .sort_values(["freq", "sumv"], ascending=[False, False]))
-        ncl = max(0, remaining // per_cluster)
-        chosen = clusters.head(ncl)["cluster"]
-        return (d[d["cluster"].isin(chosen)]
-                .sort_values(["cluster","strength"], ascending=[True, False])
-                .groupby("cluster").head(per_cluster))
-
-    # 4-3-2-1 tiers
-    lvl1 = pick(nodes, "freq>=4", 4, remaining)
-    selected = pd.concat([selected, lvl1]); remaining = cap_limit - len(selected)
-    if remaining > 0:
-        cap_limit = max(cap_limit, 22)
-        lvl2 = pick(nodes, "freq==3", 3, remaining)
-        selected = pd.concat([selected, lvl2]); remaining = cap_limit - len(selected)
-    if remaining > 0:
-        cap_limit = max(cap_limit, 21)
-        lvl3 = pick(nodes, "freq==2", 2, remaining)
-        selected = pd.concat([selected, lvl3]); remaining = cap_limit - len(selected)
-    if remaining > 0:
-        lvl4 = pick(nodes, "freq==1", 1, remaining)
-        selected = pd.concat([selected, lvl4])
-
-    selected = (selected.drop_duplicates(subset=["term","cluster"])
-                        .sort_values("strength", ascending=False)
-                        .head(cap_limit))
-    return selected
-
-# ------------------------------------------------------------
-@app.get("/", response_class=HTMLResponse)
-async def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-# ------------------------------------------------------------
 @app.post("/analyze_csv", response_class=HTMLResponse)
 async def analyze_csv(request: Request, file: UploadFile):
-    try:
-        df = safe_read_csv(file)
-        df.columns = [c.strip() for c in df.columns]
-        mode = "abstract" if len(df.columns) == 1 else "coword"
+    df = safe_read_csv(file)
+    ncols = len(df.columns)
 
-        if mode == "coword":
-            df = normalize_headers(df)
-            ncols = len(df.columns)
+    # --------------------------------------------------------
+    # Mode 1 → Abstract (1-column)   Mode 2 → Co-Word (multi)
+    # --------------------------------------------------------
+    mode = 1 if ncols == 1 else 2
+    file_base = os.path.splitext(file.filename)[0]
 
-            if ncols == 3:
-                cols = list(df.columns)
-                edges = df.rename(columns={cols[0]:"source", cols[1]:"target", cols[2]:"weight"})
-                edges["weight"] = pd.to_numeric(edges["weight"], errors="coerce").fillna(1)
-            elif ncols == 2:
-                cols = list(df.columns)
-                edges = df.rename(columns={cols[0]:"source", cols[1]:"target"})
-                edges["weight"] = 1
-            else:
-                edges = wide_to_edges(df)
+    # ============================================================
+    # 🧠 MODE 1: ABSTRACT — Semantic Terms (placeholder GPT/TF-IDF)
+    # ============================================================
+    if mode == 1:
+        terms = []
+        for _, row in df.iterrows():
+            text = str(row.iloc[0])
+            # placeholder tokenization (simulate GPT extraction)
+            toks = [t.strip(" ,.;") for t in text.split() if len(t) > 2]
+            terms.append(list(set(toks[:10])))
+        # convert to dataframe (article × terms)
+        max_len = max(len(x) for x in terms)
+        padded = [x + [""] * (max_len - len(x)) for x in terms]
+        df_terms = pd.DataFrame(padded)
+        df_terms.to_csv("static/semantic_terms.csv", index=False, encoding="utf-8-sig")
+        return HTMLResponse(
+            f"<h3>🧠 Abstract Mode completed — semantic terms extracted.</h3>"
+            f"<a href='/static/semantic_terms.csv'>Download terms</a><br>"
+            f"<a href='/'>Return Home</a>"
+        )
 
-            if edges.empty:
-                return HTMLResponse("<h3>❌ No valid edges found.</h3>")
+    # ============================================================
+    # 🐾 MODE 2: CO-WORD — Build network and cluster
+    # ============================================================
+    else:
+        # build all co-occurrence pairs
+        pairs = []
+        for _, row in df.iterrows():
+            terms = [str(x).strip() for x in row if str(x).strip()]
+            for i in range(len(terms)):
+                for j in range(i + 1, len(terms)):
+                    pairs.append(tuple(sorted([terms[i], terms[j]])))
+        edges = pd.DataFrame(pairs, columns=["term1", "term2"])
+        edges["connection_count"] = 1
+        edges = edges.groupby(["term1", "term2"], as_index=False)["connection_count"].sum()
 
-            G = nx.from_pandas_edgelist(edges, "source", "target", ["weight"])
-            if G.number_of_nodes() == 0:
-                return HTMLResponse("<h3>❌ No valid nodes.</h3>")
+        # build vertex list
+        all_terms = pd.Series(pd.concat([edges["term1"], edges["term2"]]))
+        vertices = pd.DataFrame({"name": all_terms.value_counts().index,
+                                 "value": all_terms.value_counts().values})
 
-            vertices = pd.DataFrame({"term": list(G.nodes())})
-            vertices["degree"] = [d for _, d in G.degree()]
-            vertices["strength"] = [sum(w for _,_,w in G.edges(n,data="weight")) for n in G.nodes()]
-            vertices["cluster"] = vertices["term"].map(community_louvain.best_partition(G, weight="weight", resolution=1.0))
-            aac = compute_aac(vertices["strength"])
-            aac_label = f"AAC = {aac}" if aac else "AAC unavailable"
+        # edge strength per node
+        strength = edges.groupby("term1")["connection_count"].sum().add(
+            edges.groupby("term2")["connection_count"].sum(), fill_value=0)
+        vertices["value2"] = vertices["name"].map(strength).fillna(0)
 
-            # 🔹 R-style Top20+ selection
-            top_nodes = select_top20_like_R(vertices, cap_limit=20)
-            selected_terms = top_nodes["term"].tolist()
-            edges = edges[edges["source"].isin(selected_terms) & edges["target"].isin(selected_terms)]
-            vertices = vertices[vertices["term"].isin(selected_terms)]
+        # enforce at least 20 vertices
+        if len(vertices) < 20:
+            extra = 20 - len(vertices)
+            add = pd.DataFrame({
+                "name": [f"dummy_{i}" for i in range(extra)],
+                "value": 1, "value2": 1})
+            vertices = pd.concat([vertices, add], ignore_index=True)
 
-            # 🧹 Clean & normalize
-            vertices["term"] = vertices["term"].astype(str).str.strip()
-            vertices = vertices[vertices["term"].notna() & (vertices["term"] != "")]
-            vertices["term"] = vertices["term"].apply(lambda x: x.encode("utf-8","ignore").decode("utf-8","ignore"))
-            vertices = vertices.drop_duplicates(subset=["term"])
-            edges = edges[edges["source"].isin(vertices["term"]) & edges["target"].isin(vertices["term"])]
+        # --------------------------------------------------------
+        # Louvain clustering
+        # --------------------------------------------------------
+        G = nx.from_pandas_edgelist(edges, "term1", "term2", ["connection_count"])
+        cluster = community_louvain.best_partition(G, weight="connection_count", random_state=42)
+        vertices["cluster"] = vertices["name"].map(cluster)
+        # mark cluster leaders
+        leaders = vertices.sort_values(["cluster", "value2"], ascending=[True, False]) \
+                          .groupby("cluster").head(1)[["cluster", "name"]] \
+                          .rename(columns={"name": "leader_label"})
+        vertices = vertices.merge(leaders, on="cluster", how="left")
 
-            # 📂 Save all outputs
-            vertices.to_csv(os.path.join(STATIC_DIR,"vertices.csv"), index=False, encoding="utf-8-sig")
-            edges.to_csv(os.path.join(STATIC_DIR,"relations.csv"), index=False, encoding="utf-8-sig")
-            theme_assign = vertices[["term","cluster"]].merge(edges,left_on="term",right_on="source",how="left")
-            theme_assign = theme_assign[theme_assign["term"].notna()]
-            theme_assign.to_csv(os.path.join(STATIC_DIR,"theme.csv"), index=False, encoding="utf-8-sig")
+        # --------------------------------------------------------
+        # Theme summary (theme.csv)
+        # --------------------------------------------------------
+        theme = vertices.groupby("cluster").agg(
+            leader=("leader_label", "first"),
+            member_count=("name", "count"),
+            members=("name", lambda x: ", ".join(x))
+        ).reset_index(drop=True)
+        theme.to_csv("static/theme.csv", index=False, encoding="utf-8-sig")
 
-            # 📊 Bar chart (only major clusters n ≥ 2)
-            theme_df = vertices.groupby("cluster").size().reset_index(name="member_count")
-            theme_df = theme_df[theme_df["member_count"] >= 2]
-            plt.figure(figsize=(7,5))
-            theme_df.plot.barh(x="cluster", y="member_count", legend=False)
-            plt.title(f"H-Theme Distribution (Top 20+) — {aac_label}")
-            plt.tight_layout()
-            plt.savefig(os.path.join(STATIC_DIR,"h_theme_bar.png"), dpi=150)
-            plt.close()
+        # --------------------------------------------------------
+        # TAAA theme assignment: dominant cluster per row
+        # --------------------------------------------------------
+        def assign_theme(row):
+            row_terms = [str(x).strip() for x in row if str(x).strip()]
+            clusters = [cluster[t] for t in row_terms if t in cluster]
+            if not clusters: return "Unclassified"
+            vals, cnts = np.unique(clusters, return_counts=True)
+            top = vals[np.argmax(cnts)]
+            return theme.loc[theme["leader"] == leaders.loc[leaders["cluster"] == top, "leader_label"].iloc[0],
+                             "leader"].values[0]
 
-            # 📈 Scatter with mean lines
-            vertices["value2"] = vertices["degree"]
-            vertices["value"] = vertices["strength"]
-            mx, my = vertices["value2"].mean(), vertices["value"].mean()
-            fig = px.scatter(vertices, x="value2", y="value",
-                             color=vertices["cluster"].astype(str),
-                             text="term",
-                             title=f"Theme Scatter (Top 20+) — {aac_label}",
-                             labels={"value2":"Degree","value":"Strength"},
-                             height=600)
-            fig.add_shape(type="line", x0=mx, x1=mx,
-                          y0=vertices["value"].min(), y1=vertices["value"].max(),
-                          line=dict(color="red", dash="dot"))
-            fig.add_shape(type="line", x0=vertices["value2"].min(), x1=vertices["value2"].max(),
-                          y0=my, y1=my, line=dict(color="red", dash="dot"))
-            fig.update_traces(textposition="top center", marker=dict(size=12, opacity=0.8))
-            fig.write_html(os.path.join(STATIC_DIR, "theme_scatter.html"))
+        theme_assign = pd.DataFrame({
+            "article_id": range(1, len(df) + 1),
+            "theme": df.apply(assign_theme, axis=1)
+        })
+        theme_assign.to_csv("static/theme_assignment.csv", index=False, encoding="utf-8-sig")
 
-            # 🧾 HTML report
-            html = f"""
-            <h2>✅ Co-Word Analysis Completed (Top 20+ Balanced Selection)</h2>
-            <p>Detected {len(vertices)} top terms across clusters.</p>
-            <p><b>{aac_label}</b></p>
-            <ul>
-              <li><a href="/static/vertices.csv" target="_blank">Vertices CSV</a></li>
-              <li><a href="/static/relations.csv" target="_blank">Relations CSV</a></li>
-              <li><a href="/static/theme.csv" target="_blank">Theme–Article Assignment CSV</a></li>
-              <li><a href="/static/h_theme_bar.png" target="_blank">H-Theme Bar (PNG)</a></li>
-              <li><a href="/static/theme_scatter.html" target="_blank">Theme Scatter (Interactive)</a></li>
-            </ul>
-            <div style="margin-top:40px;">
-              <button onclick="window.location.href='/'"
-                style="background:#007ACC;color:white;border:none;padding:10px 24px;
-                       border-radius:6px;cursor:pointer;font-size:15px;">
-                ⬅️ Return to Home
-              </button>
-            </div>
-            <footer style="margin-top:25px;font-size:13px;color:#888;">
-              © 2025 Smile Chien · TAAA Semantic–Co-Word Analyzer v18.4
-            </footer>
-            """
-            return HTMLResponse(html)
+        # --------------------------------------------------------
+        # AAC + H-theme computation
+        # --------------------------------------------------------
+        aac = compute_aac(vertices["value"].tolist())
+        theme = theme.sort_values("member_count", ascending=False)
+        h = max(i + 1 for i, c in enumerate(theme["member_count"]) if c >= i + 1)
 
-        else:
-            return HTMLResponse("<h3>Abstract mode detected — feature available separately.</h3>")
+        # h-theme bar
+        plt.figure(figsize=(8, 5))
+        plt.bar(range(1, len(theme) + 1), theme["member_count"], color="#69b3a2")
+        plt.axhline(y=h, color="red", linestyle="--")
+        plt.axvline(x=h, color="red", linestyle="--")
+        plt.title(f"H-Theme Bar (h={h})")
+        plt.xlabel("Theme Rank")
+        plt.ylabel("Member Count")
+        plt.tight_layout()
+        plt.savefig("static/h_theme_bar.png", dpi=150)
+        plt.close()
 
-    except Exception as e:
-        return HTMLResponse(f"<h3>Internal Error:<br>{e}</h3>")
+        # theme scatter (interactive)
+        mean_x, mean_y = vertices["value2"].mean(), vertices["value"].mean()
+        fig = px.scatter(vertices, x="value2", y="value", color=vertices["cluster"].astype(str),
+                         size="value", hover_name="name",
+                         title=f"Theme Scatter — AAC={aac}")
+        fig.add_vline(x=mean_x, line_dash="dot", line_color="red")
+        fig.add_hline(y=mean_y, line_dash="dot", line_color="red")
+        fig.write_html("static/theme_scatter.html")
+
+        # --------------------------------------------------------
+        # Save all CSV outputs
+        # --------------------------------------------------------
+        vertices.to_csv("static/vertices.csv", index=False, encoding="utf-8-sig")
+        edges.to_csv("static/relations.csv", index=False, encoding="utf-8-sig")
+        summary = pd.DataFrame([{
+            "AAC": aac,
+            "Total_Clusters": theme.shape[0],
+            "Nodes": len(vertices),
+            "Edges": len(edges)
+        }])
+        summary.to_csv("static/summary.csv", index=False, encoding="utf-8-sig")
+
+        # --------------------------------------------------------
+        # Final HTML output
+        # --------------------------------------------------------
+        links = """
+        <h3>✅ Analysis Completed</h3>
+        <p><b>5 CSVs:</b><br>
+        <a href='/static/vertices.csv'>vertices.csv</a> |
+        <a href='/static/relations.csv'>relations.csv</a> |
+        <a href='/static/theme.csv'>theme.csv</a> |
+        <a href='/static/theme_assignment.csv'>theme_assignment.csv</a> |
+        <a href='/static/summary.csv'>summary.csv</a></p>
+        <p><b>2 Plots:</b><br>
+        <a href='/static/h_theme_bar.png'>📊 H-Theme Bar</a> |
+        <a href='/static/theme_scatter.html'>🌐 Theme Scatter</a></p>
+        <p><a href='/'>Return Home</a></p>
+        """
+        return HTMLResponse(links)
+
+# ============================================================
+# 🏠 Home Route
+# ============================================================
+
+@app.get("/", response_class=HTMLResponse)
+async def home(request: Request):
+    with open("index.html", "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read())
+
+# ============================================================
+# Static Mount
+# ============================================================
+app.mount("/static", StaticFiles(directory="static"), name="static")
