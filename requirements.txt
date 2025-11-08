@@ -1,4 +1,3 @@
---only-binary=:all:
 fastapi==0.115.2
 uvicorn==0.32.0
 openai==1.52.2
@@ -10,5 +9,4 @@ scikit-learn==1.5.2
 chardet==5.2.0
 python-multipart==0.0.20
 requests==2.32.3
-guess_language-spirit
-fonttools==4.54.1
+langdetect==1.0.9  # ✅ 取代 guess_language-spirit
