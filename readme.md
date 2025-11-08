@@ -38,16 +38,16 @@ Built for bibliometric and semantic-trend analysis in academic datasets
 Your repo should now look like:
 
 TAAA_Semantic_Extractor/
-TAAA_Semantic_Extractor/
 ├── app/
-│   ├── main.py                 ✅ (this file)
-│   ├── static/                 ✅ (for CSV & image outputs)
-│   └── templates/              ✅ (for HTML)
-│       └── index.html
-├── requirements.txt
-├── render.yaml
-└── README.md
-
+│   ├── main.py
+│   ├── templates/
+│   │   └── index.html
+│   ├── static/
+│   │   ├── abstract_sample.csv
+│   │   ├── coword_sample.csv
+│   │   ├── readme_dataset_info.csv
+│   └── ...
+└── requirements.txt
 
 ###✅ Summary of what this version does
 Feature	Description
