@@ -65,10 +65,10 @@ footer{margin-top:25px;font-size:13px;color:#888;}
     <h3>🧩 Functional Summary (Feature: With<font color="red"> 2 Steps Only via AI</font>)</h3>
     <table>
       <tr><th>Step</th><th>Module</th><th>Description</th></tr>
-      <tr><td>1️⃣</td><td>Mode 1 – Abstract</td><td>If 1-column input → extract semantic terms (placeholder for GPT/TF-IDF).</td></tr>
+      <tr><td>1️⃣</td><td>Mode 1 – Abstract</td><td>If 1-column input → extract semantic terms (placeholder for GPT/TF-IDF) for any languare or article DOI.</td></tr>
       <tr><td>2️⃣</td><td>Mode 2 – Co-word</td><td>If multi-column input → build co-occurrence pairs and compute edge weights.</td></tr>
-      <tr><td>3️⃣</td><td>Mode 3 – Clustering</td><td>Louvain clustering over all terms → assign cluster to each term.</td></tr>
-      <tr><td>4️⃣</td><td>Mode 4 – Theme Extraction</td><td>Cluster leaders (highest-strength terms) used as theme names.</td></tr>
+      <tr><td>3️⃣</td><td>Mode 3 – Clustering</td><td>Louvain clustering over all terms via relation data → assign cluster to each term.</td></tr>
+      <tr><td>4️⃣</td><td>Mode 4 – Theme Extraction</td><td>Determining Cluster leaders (highest-strength terms) used as theme names(with a sematic term if meaningful).</td></tr>
       <tr><td>5️⃣</td><td>Mode 5 – Theme Assignment (TAAA)</td><td>Each article (row) gets a dominant theme by mode rule: most frequent cluster ID → if tie, smallest cluster number wins.</td></tr>
     </table>
 
@@ -92,7 +92,7 @@ footer{margin-top:25px;font-size:13px;color:#888;}
       <li>Encoding-safe (UTF-8 / Big5)</li>
       <li>At least 20 nodes enforced by the strategy: top 4 nodes in bigger clusters</li>
       <li>Louvain clustering stable and reproducible</li>
-      <li>TAAA theme assignment applied to original uploaded rows by the stategy: mode in byline for candidate cluster otherwise beingthe density cluster </li>
+      <li>TAAA theme assignment applied to original uploaded rows by the strategy: mode in byline as theme; if tie, smallest cluster number wins </li>
       <li>All CSV + 2 plots linked in the result page with Return-Home button</li>
     </ul>
 
