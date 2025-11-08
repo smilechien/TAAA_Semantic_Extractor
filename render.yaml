@@ -1,15 +1,21 @@
+# render.yaml — 部署設定檔
+
 services:
   - type: web
-    name: taaa-semantic-analyzer
+    name: taaa-app                # 你的服務名稱，可自行更改
     env: python
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    plan: free                    # 可改成 starter 或 plus
+    region: oregon                # 伺服器地區，可用 singapore / frankfurt / oregon 等
+    buildCommand: |
+      pip install --upgrade pip setuptools wheel
+      pip install -r requirements.txt
+    startCommand: |
+      python app.py               # 若你用 FastAPI，改成 uvicorn main:app --host 0.0.0.0 --port 10000
     envVars:
       - key: PYTHON_VERSION
-        value: 3.12.7
-    disk:
-      name: static
-      mountPath: /opt/render/project/src/static
-      sizeGB: 1
+        value: 3.12.3             # ✅ 關鍵：強制使用 Python 3.12（避免 pandas 在 3.13 編譯失敗）
+      - key: OPENAI_API_KEY
+        sync: false               # 🔒 你稍後在 Render 儀表板手動輸入 API key
+      - key: PORT
+        value: 10000              # Render 預設使用這個埠口
 
