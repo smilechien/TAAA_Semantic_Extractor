@@ -1,29 +1,11 @@
-# ============================================================
-# 📦 TAAA Semantic–Co-Word Analyzer v20.2 — Requirements
-# Compatible with Python 3.10–3.12 on Render
-# ============================================================
-
 fastapi==0.115.0
 uvicorn==0.30.6
-
-# --- Data handling ---
 pandas==2.2.2
 numpy==1.26.4
-
-# --- Network analysis ---
 networkx==3.3
-python-louvain==0.16  # correct package name for community_louvain
-
-# --- Visualization ---
-matplotlib==3.9.2
+python-louvain==0.15  # 0.16 may trigger local wheel build
+matplotlib==3.8.4     # stable prebuilt wheel
 plotly==5.24.1
-
-# --- Web templating ---
 jinja2==3.1.4
-
-# --- Optional: ensures HTMLResponse encoding and MIME handling ---
 aiofiles==24.1.0
-
-# --- Render/Deployment helpers (safe fallback) ---
 typing-extensions>=4.9.0
-
