@@ -1,20 +1,29 @@
 # ============================================================
-# ✅ requirements.txt — Render-Safe (Python 3.13 Final v20.5)
+# 📦 TAAA Semantic–Co-Word Analyzer v20.2 — Requirements
+# Compatible with Python 3.10–3.12 on Render
 # ============================================================
 
 fastapi==0.115.0
 uvicorn==0.30.6
-jinja2==3.1.4
-pandas==2.3.3
-numpy==2.2.6
-networkx==3.3
-community-louvain==0.16        # 👈 3.13-compatible Louvain fork
-matplotlib==3.9.2
-plotly==5.23.0
-chardet==5.2.0
 
-setuptools>=75.0.0
-wheel>=0.44.0
-pip>=25.3
---only-binary=:all:
+# --- Data handling ---
+pandas==2.2.2
+numpy==1.26.4
+
+# --- Network analysis ---
+networkx==3.3
+python-louvain==0.16  # correct package name for community_louvain
+
+# --- Visualization ---
+matplotlib==3.9.2
+plotly==5.24.1
+
+# --- Web templating ---
+jinja2==3.1.4
+
+# --- Optional: ensures HTMLResponse encoding and MIME handling ---
+aiofiles==24.1.0
+
+# --- Render/Deployment helpers (safe fallback) ---
+typing-extensions>=4.9.0
 
