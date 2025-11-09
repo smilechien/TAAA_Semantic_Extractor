@@ -3,14 +3,13 @@ services:
     name: taaa-semantic-extractor
     env: python
     plan: free
-    buildCommand: pip install -r requirements.txt
+    buildCommand: |
+      pip install --upgrade pip setuptools wheel
+      pip install --only-binary=:all: pandas==2.2.2
+      pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
     envVars:
       - key: PYTHON_VERSION
-        value: 3.12.4       # ✅ explicitly downgrade from 3.13
+        value: 3.12.4     # ✅ Downgrade to stable 3.12 (avoids pandas build)
     autoDeploy: true
-buildCommand: |
-  pip install --upgrade pip setuptools wheel
-  pip install "pandas==2.2.2" --only-binary=:all:
-  pip install -r requirements.txt
 
