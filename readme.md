@@ -37,17 +37,18 @@ Built for bibliometric and semantic-trend analysis in academic datasets
 
 Your repo should now look like:
 
-TAAA_Semantic_Extractor/
-├── app/
-│   ├── main.py
-│   ├── templates/
-│   │   └── index.html
-│   ├── static/
-│   │   ├── abstract_sample.csv
-│   │   ├── coword_sample.csv
-│   │   ├── readme_dataset_info.csv
-│   └── ...
-└── requirements.txt
+TAAA_Semantic_Analyzer/
+│
+├── main.py                ← full FastAPI app (above)
+├── requirements.txt
+├── index.html             ← HTML UI (with API key input & TF-IDF note)
+│
+├── static/                ← auto-generated output files (CSV, PNG, HTML)
+│   └── (auto-created on runtime)
+│
+├── templates/             ← (optional for future Jinja pages)
+│
+└── render.yaml            ← (optional Render config if you use auto-deploy)
 
 ###✅ Summary of what this version does
 Feature	Description

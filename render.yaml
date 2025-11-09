@@ -1,23 +1,11 @@
-# render.yaml
-
 services:
   - type: web
-    name: taaa-app
+    name: taaa-semantic-analyzer
     env: python
     plan: free
-    region: singapore        # 可改 oregon / frankfurt / singapore 等
-
-    buildCommand: |
-      pip install --upgrade pip setuptools wheel
-      pip install -r requirements.txt
-
-    startCommand: |
-      gunicorn app:app --bind 0.0.0.0:$PORT
-
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
     envVars:
       - key: PYTHON_VERSION
-        value: 3.12.3         # ✅ 關鍵：避免 pandas 在 3.13 下編譯錯誤
-      - key: OPENAI_API_KEY
-        sync: false           # 🔒 請在 Render 控制台手動輸入金鑰
-      - key: PORT
-        value: 10000
+        value: 3.13.0
+    autoDeploy: true

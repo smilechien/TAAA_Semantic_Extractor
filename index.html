@@ -44,7 +44,14 @@ footer{margin-top:25px;font-size:13px;color:#888;}
     <label for="file">Step 1 · Select your CSV file:</label><br>
     <p>1-column → Abstract Mode · Multi-column → Co-Word Mode</p><br>
     <input type="file" id="file" name="file" accept=".csv" required><br>
-    <button type="submit">🚀 Analyze</button>
+    <label><b>🔑 Enter your OpenAI API Key (optional):</b></label>
+    <input type="password" name="api_key" placeholder="sk-..." />
+
+    <div class="note">
+      ⚠️ We do not store your API key; it is used only for this session.<br>
+      若未輸入 API 金鑰，系統將自動採用 TF-IDF 模式進行語義分析。
+    </div>
+     <button type="submit">🚀 Analyze</button>
   </form>
 
   <div class="spinner" id="spinner">⏳ Analyzing … / 分析中 …</div>

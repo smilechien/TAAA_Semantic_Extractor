@@ -1,12 +1,12 @@
-fastapi==0.115.2
-uvicorn==0.32.0
-openai==1.52.2
-pandas==2.2.3
-numpy==2.3.4
-matplotlib==3.9.2
+fastapi==0.115.0
+uvicorn==0.30.6
+pandas==2.2.2
+numpy==1.26.4
+matplotlib==3.9.1
+plotly==5.24.1
 networkx==3.3
+python-louvain==0.16
 scikit-learn==1.5.2
-chardet==5.2.0
-python-multipart==0.0.20
-requests==2.32.3
-langdetect==1.0.9  # ✅ 取代 guess_language-spirit
+openai==1.53.0
+jinja2==3.1.4
+
