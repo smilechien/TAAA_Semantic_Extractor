@@ -7,6 +7,10 @@ services:
     startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
     envVars:
       - key: PYTHON_VERSION
-        value: 3.12.4
+        value: 3.12.4       # ✅ explicitly downgrade from 3.13
     autoDeploy: true
+buildCommand: |
+  pip install --upgrade pip setuptools wheel
+  pip install "pandas==2.2.2" --only-binary=:all:
+  pip install -r requirements.txt
 
